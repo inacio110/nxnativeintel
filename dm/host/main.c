@@ -35,6 +35,33 @@ static void guest_call(void *entry, uint64_t x0, uint64_t x1) {
 // Game arguments: argv[0] is fixed to "game", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
 static char *g_argv[64] = {"game"}; static int g_argc = 1;
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+// Official Switch processes receive an NSO argument area at a page-aligned
+// address.  The SDK 3.x nnosInitialize path uses it before SetHostArgc/Argv:
+// two u32 sizes at the front, followed by a space-separated argument string.
+// Keep the same layout for translated startup; a null pointer is tolerated by
+// newer SDKs but SDK 3.4 dereferences fields in the area unconditionally.
+static uint8_t g_program_argdata[0x9000] __attribute__((aligned(4)));
+
+static uint64_t guest_program_argdata(void) {
+    memset(g_program_argdata, 0, sizeof g_program_argdata);
+    uint8_t *args = g_program_argdata + 0x20;
+    size_t used = 0;
+    for (int i = 0; i < g_argc; i++) {
+        if (i) args[used++] = ' ';
+        const size_t n = strlen(g_argv[i]);
+        if (used + n > sizeof g_program_argdata - 0x20 - 1) die("translated argument area is full");
+        memcpy(args + used, g_argv[i], n);
+        used += n;
+    }
+    const uint32_t allocation = (uint32_t)sizeof g_program_argdata;
+    const uint32_t string_size = (uint32_t)used;
+    memcpy(g_program_argdata + 0, &allocation, sizeof allocation);
+    memcpy(g_program_argdata + 4, &string_size, sizeof string_size);
+    return (uint64_t)(uintptr_t)g_program_argdata;
+}
+#endif
+
 static void guest_main(void) {
     guest_thread_init();
     guest_gate_stack(0);   // the guest code runs on this thread's own stack: its SVCs get a stack of their own
@@ -44,7 +71,9 @@ static void guest_main(void) {
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
 #ifdef DM_GUEST_CPU_DYNARMIC
     guest_call(req("_init_libc0"), 0, 0);
-    LOG(">>> nnosInitialize"); guest_call(req("nnosInitialize"), hmain, 0);
+    const uint64_t argdata = guest_program_argdata();
+    LOG(">>> nnosInitialize");
+    guest_call(req("nnosInitialize"), hmain, argdata);
     guest_call(req("_init_libc1"), 0, 0);
     LOG(">>> nninitInitializeSdkModule"); guest_call(req("nninitInitializeSdkModule"), 0, 0);
 #else

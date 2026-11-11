@@ -56,6 +56,20 @@ int main() {
     assert(dm_guest_cpu_run(&state, reinterpret_cast<uintptr_t>(code), 0, nullptr, nullptr) == 0);
     assert(state.x[0] == 42);
 
+    // A direct branch ends the first JIT block before its target has been
+    // compiled. The host boundary must resume Dynarmic until the guest return
+    // stub, rather than mistaking that normal dispatch boundary for a stop.
+    const uint32_t branched_code[] = {
+        0x14000002u, // b +8: skip the next instruction
+        0xd2800000u, // mov x0, #0 (skipped)
+        0xd2800f60u, // mov x0, #123
+        0xd65f03c0u, // ret
+    };
+    state = {};
+    state.sp = reinterpret_cast<uintptr_t>(stack + sizeof stack - DM_GUEST_CPU_STACK_ARG_BYTES);
+    assert(dm_guest_cpu_run(&state, reinterpret_cast<uintptr_t>(branched_code), 0, nullptr, nullptr) == 0);
+    assert(state.x[0] == 123);
+
     // A raw AArch64 symbol can also be exposed as a normal x86_64 function
     // pointer for host code that calls back into the SDK.
     const uint32_t return_code[] = {0xd2800f60u, 0xd65f03c0u}; // mov x0, #123; ret

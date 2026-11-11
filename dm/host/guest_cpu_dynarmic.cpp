@@ -20,6 +20,7 @@
 #include <unordered_map>
 
 #include "dynarmic/interface/A64/a64.h"
+#include "dynarmic/interface/exclusive_monitor.h"
 
 namespace {
 
@@ -45,8 +46,11 @@ void *g_guest_entries[kMaxGuestStubs];
 std::unordered_map<void *, unsigned> g_guest_indices;
 std::mutex g_guest_lock;
 thread_local const char *g_last_error;
+thread_local char g_last_error_detail[256];
 alignas(16) thread_local uint8_t g_guest_tsd[DM_GUEST_CPU_TSD_GATE + sizeof(uint64_t)]{};
+thread_local uint64_t g_guest_tpidrro_el0;
 thread_local uint64_t g_guest_tpidr_el0;
+Dynarmic::ExclusiveMonitor g_guest_global_monitor{1};
 
 template <typename T>
 T load(uint64_t address) {
@@ -311,9 +315,15 @@ extern "C" int dm_guest_cpu_run(dm_guest_cpu_state *state, uint64_t entry, uint6
 
     Dynarmic::A64::UserConfig config{};
     config.callbacks = &callbacks;
+    config.global_monitor = &g_guest_global_monitor;
     config.cntfrq_el0 = 19'200'000;
     config.wall_clock_cntpct = true;
-    config.tpidrro_el0 = reinterpret_cast<const uint64_t *>(g_guest_tsd);
+    // Dynarmic's UserConfig fields point to host storage containing the
+    // register value. TPIDRRO_EL0 itself is the address of the translated TSD
+    // table; pointing the field at g_guest_tsd would instead load its first
+    // slot (K18), making every guest TSD access relative to zero.
+    g_guest_tpidrro_el0 = reinterpret_cast<uint64_t>(g_guest_tsd);
+    config.tpidrro_el0 = &g_guest_tpidrro_el0;
     config.tpidr_el0 = &g_guest_tpidr_el0;
     Dynarmic::A64::Jit cpu{config};
     callbacks.cpu = &cpu;
@@ -321,12 +331,27 @@ extern "C" int dm_guest_cpu_run(dm_guest_cpu_state *state, uint64_t entry, uint6
     callbacks.sync_to_cpu();
     cpu.SetRegister(30, stop_pc);
     cpu.SetPC(entry);
-    const Dynarmic::HaltReason reason = cpu.Run();
+    // Dynarmic returns with no halt reason when a translated block reaches a
+    // not-yet-compiled branch target.  A guest function is not done until it
+    // reaches the synthetic SVC return, so keep dispatching those block
+    // boundaries instead of treating the first one as a failed call.
+    Dynarmic::HaltReason reason{};
+    for (;;) {
+        reason = cpu.Run();
+        if (callbacks.stopped || g_last_error) break;
+        if (static_cast<uint32_t>(reason) != 0) break;
+    }
     callbacks.sync_from_cpu();
 
     if (!callbacks.stopped) {
-        if (!g_last_error) g_last_error = "translated guest CPU stopped before its synthetic return";
-        (void)reason;
+        if (!g_last_error) {
+            std::snprintf(g_last_error_detail, sizeof g_last_error_detail,
+                          "translated guest CPU stopped before its synthetic return (reason=%#x pc=%#llx x30=%#llx)",
+                          static_cast<unsigned>(reason),
+                          static_cast<unsigned long long>(cpu.GetPC()),
+                          static_cast<unsigned long long>(cpu.GetRegister(30)));
+            g_last_error = g_last_error_detail;
+        }
         return -1;
     }
     return 0;
