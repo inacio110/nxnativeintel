@@ -10,6 +10,7 @@ This is code written by others, shipped with the repository so there is nothing 
 | `stb_vorbis/` | Ogg Vorbis decoder, a single file `stb_vorbis.c` | 1.22 (upstream commit `1ee679c`), unmodified | Host: decodes the Vorbis sound tracks of the games' WebM movies (`dm/host/hle_movie.c`, which includes the file with its push-data API only) | `stb_vorbis/LICENSE` (MIT or public domain, your choice; the same text ends `stb_vorbis.c`) |
 | `ryujinx/` | The shader translation library from Ryujinx, three projects: `Ryujinx.Graphics.Shader`, `Ryujinx.Common`, `Spv.Generator` | Ryujinx 1.3.2, with the local changes listed in `ryujinx/README.md` | Referenced by the shader translation tool `dm/gfx/tools/dmsh_xlate`, which translates the original Switch shaders to SPIR-V | `ryujinx/LICENSE.txt` (MIT); `ryujinx/src/Spv.Generator/LICENSE` is that subproject's own license text |
 | `vulkan-headers/` | The Vulkan C headers: `vulkan_core.h`, `vk_platform.h`, `vulkan_vi.h` and the `vk_video/` headers they include | Vulkan-Headers 1.4.363, unmodified | Host: the Vulkan layer on Metal (`dm/gfx/vk/hle_vk.m`) that runs Hades | `vulkan-headers/LICENSE.md` (Apache-2.0 or MIT, your choice) |
+| `dynarmic/` | AArch64 dynamic translator with an x86_64 backend, used by the experimental Intel Mac guest CPU | 6.7.0, unmodified | Host: Intel Mac execution backend (added incrementally; Apple silicon keeps the native path) | `dynarmic/LICENSE.txt` (0BSD) |
 
 A few more notes:
 

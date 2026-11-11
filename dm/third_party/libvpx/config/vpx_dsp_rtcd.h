@@ -417,6 +417,9 @@ void vpx_dsp_rtcd(void);
 #include "vpx_config.h"
 
 #ifdef RTCD_C
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void setup_rtcd_internal(void) {}
+#else
 #include "vpx_ports/arm.h"
 static void setup_rtcd_internal(void)
 {
@@ -426,9 +429,100 @@ static void setup_rtcd_internal(void)
 
 }
 #endif
+#endif
 
 #ifdef __cplusplus
 }  // extern "C"
+#endif
+
+#ifdef DM_GUEST_CPU_DYNARMIC
+/* The Intel snapshot uses the portable decoder C functions. */
+#define vpx_convolve8 vpx_convolve8_c
+#define vpx_convolve8_avg vpx_convolve8_avg_c
+#define vpx_convolve8_avg_horiz vpx_convolve8_avg_horiz_c
+#define vpx_convolve8_avg_vert vpx_convolve8_avg_vert_c
+#define vpx_convolve8_horiz vpx_convolve8_horiz_c
+#define vpx_convolve8_vert vpx_convolve8_vert_c
+#define vpx_convolve_avg vpx_convolve_avg_c
+#define vpx_convolve_copy vpx_convolve_copy_c
+#define vpx_d117_predictor_16x16 vpx_d117_predictor_16x16_c
+#define vpx_d117_predictor_32x32 vpx_d117_predictor_32x32_c
+#define vpx_d117_predictor_4x4 vpx_d117_predictor_4x4_c
+#define vpx_d117_predictor_8x8 vpx_d117_predictor_8x8_c
+#define vpx_d135_predictor_16x16 vpx_d135_predictor_16x16_c
+#define vpx_d135_predictor_32x32 vpx_d135_predictor_32x32_c
+#define vpx_d135_predictor_4x4 vpx_d135_predictor_4x4_c
+#define vpx_d135_predictor_8x8 vpx_d135_predictor_8x8_c
+#define vpx_d153_predictor_16x16 vpx_d153_predictor_16x16_c
+#define vpx_d153_predictor_32x32 vpx_d153_predictor_32x32_c
+#define vpx_d153_predictor_4x4 vpx_d153_predictor_4x4_c
+#define vpx_d153_predictor_8x8 vpx_d153_predictor_8x8_c
+#define vpx_d207_predictor_16x16 vpx_d207_predictor_16x16_c
+#define vpx_d207_predictor_32x32 vpx_d207_predictor_32x32_c
+#define vpx_d207_predictor_4x4 vpx_d207_predictor_4x4_c
+#define vpx_d207_predictor_8x8 vpx_d207_predictor_8x8_c
+#define vpx_d45_predictor_16x16 vpx_d45_predictor_16x16_c
+#define vpx_d45_predictor_32x32 vpx_d45_predictor_32x32_c
+#define vpx_d45_predictor_4x4 vpx_d45_predictor_4x4_c
+#define vpx_d45_predictor_8x8 vpx_d45_predictor_8x8_c
+#define vpx_d63_predictor_16x16 vpx_d63_predictor_16x16_c
+#define vpx_d63_predictor_32x32 vpx_d63_predictor_32x32_c
+#define vpx_d63_predictor_4x4 vpx_d63_predictor_4x4_c
+#define vpx_d63_predictor_8x8 vpx_d63_predictor_8x8_c
+#define vpx_dc_128_predictor_16x16 vpx_dc_128_predictor_16x16_c
+#define vpx_dc_128_predictor_32x32 vpx_dc_128_predictor_32x32_c
+#define vpx_dc_128_predictor_4x4 vpx_dc_128_predictor_4x4_c
+#define vpx_dc_128_predictor_8x8 vpx_dc_128_predictor_8x8_c
+#define vpx_dc_left_predictor_16x16 vpx_dc_left_predictor_16x16_c
+#define vpx_dc_left_predictor_32x32 vpx_dc_left_predictor_32x32_c
+#define vpx_dc_left_predictor_4x4 vpx_dc_left_predictor_4x4_c
+#define vpx_dc_left_predictor_8x8 vpx_dc_left_predictor_8x8_c
+#define vpx_dc_predictor_16x16 vpx_dc_predictor_16x16_c
+#define vpx_dc_predictor_32x32 vpx_dc_predictor_32x32_c
+#define vpx_dc_predictor_4x4 vpx_dc_predictor_4x4_c
+#define vpx_dc_predictor_8x8 vpx_dc_predictor_8x8_c
+#define vpx_dc_top_predictor_16x16 vpx_dc_top_predictor_16x16_c
+#define vpx_dc_top_predictor_32x32 vpx_dc_top_predictor_32x32_c
+#define vpx_dc_top_predictor_4x4 vpx_dc_top_predictor_4x4_c
+#define vpx_dc_top_predictor_8x8 vpx_dc_top_predictor_8x8_c
+#define vpx_h_predictor_16x16 vpx_h_predictor_16x16_c
+#define vpx_h_predictor_32x32 vpx_h_predictor_32x32_c
+#define vpx_h_predictor_4x4 vpx_h_predictor_4x4_c
+#define vpx_h_predictor_8x8 vpx_h_predictor_8x8_c
+#define vpx_idct16x16_10_add vpx_idct16x16_10_add_c
+#define vpx_idct16x16_1_add vpx_idct16x16_1_add_c
+#define vpx_idct16x16_256_add vpx_idct16x16_256_add_c
+#define vpx_idct16x16_38_add vpx_idct16x16_38_add_c
+#define vpx_idct32x32_1024_add vpx_idct32x32_1024_add_c
+#define vpx_idct32x32_135_add vpx_idct32x32_135_add_c
+#define vpx_idct32x32_1_add vpx_idct32x32_1_add_c
+#define vpx_idct32x32_34_add vpx_idct32x32_34_add_c
+#define vpx_idct4x4_16_add vpx_idct4x4_16_add_c
+#define vpx_idct4x4_1_add vpx_idct4x4_1_add_c
+#define vpx_idct8x8_12_add vpx_idct8x8_12_add_c
+#define vpx_idct8x8_1_add vpx_idct8x8_1_add_c
+#define vpx_idct8x8_64_add vpx_idct8x8_64_add_c
+#define vpx_lpf_horizontal_16 vpx_lpf_horizontal_16_c
+#define vpx_lpf_horizontal_16_dual vpx_lpf_horizontal_16_dual_c
+#define vpx_lpf_horizontal_4 vpx_lpf_horizontal_4_c
+#define vpx_lpf_horizontal_4_dual vpx_lpf_horizontal_4_dual_c
+#define vpx_lpf_horizontal_8 vpx_lpf_horizontal_8_c
+#define vpx_lpf_horizontal_8_dual vpx_lpf_horizontal_8_dual_c
+#define vpx_lpf_vertical_16 vpx_lpf_vertical_16_c
+#define vpx_lpf_vertical_16_dual vpx_lpf_vertical_16_dual_c
+#define vpx_lpf_vertical_4 vpx_lpf_vertical_4_c
+#define vpx_lpf_vertical_4_dual vpx_lpf_vertical_4_dual_c
+#define vpx_lpf_vertical_8 vpx_lpf_vertical_8_c
+#define vpx_lpf_vertical_8_dual vpx_lpf_vertical_8_dual_c
+#define vpx_scaled_2d vpx_scaled_2d_c
+#define vpx_tm_predictor_16x16 vpx_tm_predictor_16x16_c
+#define vpx_tm_predictor_32x32 vpx_tm_predictor_32x32_c
+#define vpx_tm_predictor_4x4 vpx_tm_predictor_4x4_c
+#define vpx_tm_predictor_8x8 vpx_tm_predictor_8x8_c
+#define vpx_v_predictor_16x16 vpx_v_predictor_16x16_c
+#define vpx_v_predictor_32x32 vpx_v_predictor_32x32_c
+#define vpx_v_predictor_4x4 vpx_v_predictor_4x4_c
+#define vpx_v_predictor_8x8 vpx_v_predictor_8x8_c
 #endif
 
 #endif  // VPX_DSP_RTCD_H_

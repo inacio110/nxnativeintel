@@ -86,7 +86,7 @@ HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "load an NRO rewritten o
     if (rm) { rm->module = m; rm->state = 1; rm->image = image; rm->buffer = buf; }
     pthread_mutex_unlock(&g_ro_mu);
     LOG("ro::LoadModule %s (SHA-256 %s…, %u bytes, buffer %#zx, bind %s): init %s", m->name, hx, n, size, flag & 1 ? "now" : "lazy", m->init ? "called" : "none");
-    if (m->init) ((void (*)(void))(m->base + m->init))();   // as RoModule::CallInit: the module's _init (registers it and runs its init_array)
+    if (m->init) ((void (*)(void))guest_call_addr(m->base + m->init))();   // as RoModule::CallInit: the module's _init (registers it and runs its init_array)
     return 0;
 }
 
@@ -100,7 +100,7 @@ HLE_FORCE("_ZN2nn2ro8FinalizeEv", "Initialize opened no ldr:ro session", void, h
 HLE_FORCE("_ZN2nn2ro12UnloadModuleEPNS0_6ModuleE", "unload an NRO: its fini, then out of the symbol lookups", void, h_ro_UnloadModule, void *mod) {
     module_t *m = module_from(mod);
     if (!m || !m->loaded) { LOG("[RED] ro::UnloadModule: not a loaded module (%p)", mod); return; }
-    if (m->fini) ((void (*)(void))(m->base + m->fini))();   // as RoModule::CallFini
+    if (m->fini) ((void (*)(void))guest_call_addr(m->base + m->fini))();   // as RoModule::CallFini
     pthread_mutex_lock(&g_ro_mu);
     nro_unload(m);
     ((ro_module *)mod)->state = 0; ((ro_module *)mod)->module = NULL;

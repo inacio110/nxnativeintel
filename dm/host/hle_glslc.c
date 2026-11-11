@@ -29,9 +29,16 @@ int dm_glslc_gpu_code(int *major, int *minor) {
     static int v[2] = {-1, -1};
     if (v[0] < 0) {
         typedef struct { uint32_t w[16]; } glslc_version_t;
-        glslc_version_t (*get)(void) = (glslc_version_t (*)(void))guest_sym("glslcGetVersion");
         v[0] = v[1] = 0;
+#ifdef DM_GUEST_CPU_DYNARMIC
+        // This is an AAPCS64 indirect result (the 0x34-byte value is returned
+        // through x8), which is intentionally outside the scalar trampoline.
+        // Zero is the conservative answer until a descriptor adapter exists.
+        if (guest_sym("glslcGetVersion")) LOG("glslc: Intel backend cannot yet call the composite glslcGetVersion ABI; using GPU code version 0.0");
+#else
+        glslc_version_t (*get)(void) = (glslc_version_t (*)(void))guest_sym("glslcGetVersion");
         if (get) { glslc_version_t r = get(); v[0] = (int)r.w[2]; v[1] = (int)r.w[3]; LOG("glslc: GLSLC API %u.%u, GPU code version %d.%d", r.w[0], r.w[1], v[0], v[1]); }
+#endif
     }
     *major = v[0]; *minor = v[1];
     return v[0] > 0;
@@ -39,7 +46,7 @@ int dm_glslc_gpu_code(int *major, int *minor) {
 
 HLE_FORCE("glslcCompile", "run-time GLSL compile (the game's own GLSLC compiles as usual; with DM_GLSLC_CAPTURE the outputs are saved to disk for offline translation)", uint8_t, h_glslc_Compile, void *obj) {
     static uint8_t (*orig)(void *);
-    if (!orig && !(orig = guest_sym("glslcCompile"))) die("glslcCompile missing");
+    if (!orig && !(orig = guest_call_sym("glslcCompile"))) die("glslcCompile missing");
     uint8_t ok = orig(obj);
     if (ok) capture(obj);
     return ok;

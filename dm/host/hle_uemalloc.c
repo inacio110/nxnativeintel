@@ -125,12 +125,12 @@ int dm_ue_heap_owns(uint64_t a, uint64_t n) {
 static void fill(const uint8_t *vtable, int L, const char *what) {
     memcpy(g_vt, vtable, sizeof g_vt[0] * k_lay[L].nslot);
     bool s32 = k_lay[L].size32;
-    g_vt[k_lay[L].malloc_] = s32 ? (void *)m_Malloc32 : (void *)m_Malloc; g_vt[k_lay[L].realloc_] = s32 ? (void *)m_Realloc32 : (void *)m_Realloc;
-    if (k_lay[L].try_malloc) g_vt[k_lay[L].try_malloc] = (void *)m_TryMalloc;
-    if (k_lay[L].try_realloc) g_vt[k_lay[L].try_realloc] = (void *)m_TryRealloc;
-    g_vt[k_lay[L].free_] = (void *)m_Free;
-    g_vt[k_lay[L].quantize] = s32 ? (void *)m_QuantizeSize32 : (void *)m_QuantizeSize; g_vt[k_lay[L].get_size] = s32 ? (void *)m_GetAllocationSize32 : (void *)m_GetAllocationSize;
-    for (int s = 0; s < 6 && k_lay[L].nothing[s]; s++) g_vt[k_lay[L].nothing[s]] = (void *)m_Nothing;
+    g_vt[k_lay[L].malloc_] = dm_hle_guest_callable(s32 ? (void *)m_Malloc32 : (void *)m_Malloc); g_vt[k_lay[L].realloc_] = dm_hle_guest_callable(s32 ? (void *)m_Realloc32 : (void *)m_Realloc);
+    if (k_lay[L].try_malloc) g_vt[k_lay[L].try_malloc] = dm_hle_guest_callable((void *)m_TryMalloc);
+    if (k_lay[L].try_realloc) g_vt[k_lay[L].try_realloc] = dm_hle_guest_callable((void *)m_TryRealloc);
+    g_vt[k_lay[L].free_] = dm_hle_guest_callable((void *)m_Free);
+    g_vt[k_lay[L].quantize] = dm_hle_guest_callable(s32 ? (void *)m_QuantizeSize32 : (void *)m_QuantizeSize); g_vt[k_lay[L].get_size] = dm_hle_guest_callable(s32 ? (void *)m_GetAllocationSize32 : (void *)m_GetAllocationSize);
+    for (int s = 0; s < 6 && k_lay[L].nothing[s]; s++) g_vt[k_lay[L].nothing[s]] = dm_hle_guest_callable((void *)m_Nothing);
     g_zone = malloc_create_zone(0, 0); malloc_set_zone_name(g_zone, "guest Unreal heap"); g_what = what;
 }
 

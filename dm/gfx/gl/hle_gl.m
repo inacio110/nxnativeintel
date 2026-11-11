@@ -18,6 +18,9 @@
 //     glGetAttribLocation returns the Metal attribute index of the input, so the game's attribute index is the Metal one; vertex buffers are at slot 30 − index.
 // Environment: DM_GL_LOG=1 logs object creation; DM_GL_CAPTURE=<dir> writes every shader source the game compiles (<key>.vert / <key>.frag, read by gl_shaders.py).
 #include "../../host/hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "../../host/guest_cpu.h"
+#endif
 #include "../nvn/nvn_mtl.h"
 #include "../nvn/host_msl.h"
 #import <Metal/Metal.h>
@@ -48,10 +51,20 @@ typedef void *EGLDisplay, *EGLConfig, *EGLContext, *EGLSurface; typedef int32_t 
     static ret h_##name(__VA_ARGS__);                                                            \
     __attribute__((used, section("__DATA,swhle"))) static const hle_ent e_##name = {#name, (void *)h_##name}; \
     static ret h_##name(__VA_ARGS__)
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define BIGSTUB(fn)
+#define BIG_ENTRY(fn) fn
+#else
 #define BIGSTUB(fn)                                                                              \
     extern const char fn##_bs[];                                                                 \
     __asm__(".text\n.p2align 2\n.globl _" #fn "_bs\n.private_extern _" #fn "_bs\n_" #fn "_bs:\n" \
             "    adrp x16, _" #fn "@PAGE\n    add x16, x16, _" #fn "@PAGEOFF\n    b _dm_bigstack_enter\n")
+#define BIG_ENTRY(fn) fn##_bs
+#endif
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define GLB(name, ret, ...) GL(name, ret, __VA_ARGS__)
+#define EGL(name, ret, ...) GL(name, ret, __VA_ARGS__)
+#else
 #define GLB(name, ret, ...)                                                                      \
     static ret h_##name(__VA_ARGS__) __attribute__((used));                                      \
     BIGSTUB(h_##name);                                                                           \
@@ -62,6 +75,7 @@ typedef void *EGLDisplay, *EGLConfig, *EGLContext, *EGLSurface; typedef int32_t 
     BIGSTUB(h_##name);                                                                           \
     __attribute__((used, section("__DATA,swhle"))) static const hle_ent e_##name = {#name, (void *)h_##name##_bs}; \
     static ret h_##name(__VA_ARGS__)
+#endif
 
 // ---------- GL enums ----------
 enum {
@@ -1459,13 +1473,13 @@ static void teximg_impl(const teximg_args *a) {
     }
 }
 GL(glTexImage2D, void, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint border, GLenum format, GLenum type, const void *pixels) {
-    (void)border; teximg_args a = {target, level, ifmt, 0, 0, w, h, format, type, pixels, 0, 0, 0}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
+    (void)border; teximg_args a = {target, level, ifmt, 0, 0, w, h, format, type, pixels, 0, 0, 0}; ((void (*)(const teximg_args *))(const void *)BIG_ENTRY(teximg_impl))(&a);
 }
 GL(glTexSubImage2D, void, GLenum target, GLint level, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, const void *pixels) {
-    teximg_args a = {target, level, 0, x, y, w, h, format, type, pixels, 0, 1, 0}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
+    teximg_args a = {target, level, 0, x, y, w, h, format, type, pixels, 0, 1, 0}; ((void (*)(const teximg_args *))(const void *)BIG_ENTRY(teximg_impl))(&a);
 }
 GL(glCompressedTexImage2D, void, GLenum target, GLint level, GLenum ifmt, GLsizei w, GLsizei h, GLint border, GLsizei size, const void *data) {
-    (void)border; teximg_args a = {target, level, (GLint)ifmt, 0, 0, w, h, 0, 0, data, size, 0, 1}; ((void (*)(const teximg_args *))(const void *)teximg_impl_bs)(&a);
+    (void)border; teximg_args a = {target, level, (GLint)ifmt, 0, 0, w, h, 0, 0, data, size, 0, 1}; ((void (*)(const teximg_args *))(const void *)BIG_ENTRY(teximg_impl))(&a);
 }
 // glTexStorage2D / 3D: the format, the size and the level count, before any data (LÖVE makes every texture so, the mipmapped ones with all their levels, which glGenerateMipmap
 // fills). The Metal texture is made at its first upload, attachment or sampling, as one glTexImage2D gives (tex_make: shared, or private for a render target)
@@ -1500,7 +1514,7 @@ static void tex3d_impl(const tex3d_args *a) {
     }
 }
 GL(glTexSubImage3D, void, GLenum target, GLint level, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d, uint64_t format, uint64_t type, const void *pixels) {
-    tex3d_args a = {target, level, x, y, z, w, h, d, (GLenum)format, (GLenum)type, pixels}; ((void (*)(const tex3d_args *))(const void *)tex3d_impl_bs)(&a);
+    tex3d_args a = {target, level, x, y, z, w, h, d, (GLenum)format, (GLenum)type, pixels}; ((void (*)(const tex3d_args *))(const void *)BIG_ENTRY(tex3d_impl))(&a);
 }
 GL(glTexImage3D, void, GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLsizei d, GLint border, GLenum format, uint64_t type, const void *pixels) {
     (void)border;
@@ -1531,7 +1545,7 @@ static void mip_impl(GLenum target) {
         if (cb != g_cb) { dm_gfx_enter(); cb_commit_one(cb); dm_gfx_leave(); }
     }
 }
-GL(glGenerateMipmap, void, GLenum target) { ((void (*)(GLenum))(const void *)mip_impl_bs)(target); }
+GL(glGenerateMipmap, void, GLenum target) { ((void (*)(GLenum))(const void *)BIG_ENTRY(mip_impl))(target); }
 
 // ---------- Framebuffers and renderbuffers ----------
 GL(glGenFramebuffers, void, GLsizei n, GLuint *out) { for (GLsizei i = 0; i < n; i++) out[i] = name_new((void ***)&g_fbs, &g_nfbs, &g_capfbs, sizeof(fb_t)); }
@@ -1632,7 +1646,7 @@ static void blit_impl(const blit_args *a) {
     }
 }
 GL(glBlitFramebuffer, void, GLint sx0, GLint sy0, GLint sx1, GLint sy1, GLint dx0, GLint dy0, GLint dx1, GLint dy1, uint64_t mask, uint64_t filter) {
-    (void)filter; blit_args a = {{sx0, sy0, sx1, sy1}, {dx0, dy0, dx1, dy1}, (GLbitfield)mask}; ((void (*)(const blit_args *))(const void *)blit_impl_bs)(&a);
+    (void)filter; blit_args a = {{sx0, sy0, sx1, sy1}, {dx0, dy0, dx1, dy1}, (GLbitfield)mask}; ((void (*)(const blit_args *))(const void *)BIG_ENTRY(blit_impl))(&a);
 }
 GL(glResolveMultisampleFramebufferAPPLE, void, void) { RED1("glResolveMultisampleFramebufferAPPLE not implemented"); }
 // glReadPixels: everything recorded so far runs first (the frame's command buffer is committed and waited for), then the rows are copied out as GL lays them, bottom row first,
@@ -1668,7 +1682,7 @@ static void readpix_impl(const readpix_args *a) {
     }
 }
 GL(glReadPixels, void, GLint x, GLint y, GLsizei w, GLsizei h, GLenum format, GLenum type, void *data) {
-    readpix_args a = {x, y, w, h, format, type, data}; ((void (*)(const readpix_args *))(const void *)readpix_impl_bs)(&a);
+    readpix_args a = {x, y, w, h, format, type, data}; ((void (*)(const readpix_args *))(const void *)BIG_ENTRY(readpix_impl))(&a);
 }
 
 // ---------- Shaders and programs ----------
@@ -2026,7 +2040,7 @@ EGL(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface s) {
 static void *gl_lookup(const char *name) {
     static const hle_ent *sec; static unsigned long sz;
     if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &sz);
-    for (unsigned long i = 0; i < sz / sizeof *sec; i++) if (!strcmp(sec[i].name, name)) return sec[i].fn;
+    for (unsigned long i = 0; i < sz / sizeof *sec; i++) if (!strcmp(sec[i].name, name)) return dm_hle_guest_callable(sec[i].fn);
     return NULL;
 }
 // DM_GL_STUBS=1 (bring-up): a GL name the layer does not implement gets a stub of its own instead of a null pointer, which reports its first call and returns 0; a game that calls
@@ -2037,6 +2051,7 @@ uint64_t gl_stub_c(uint64_t k, uint64_t x0, uint64_t x1, uint64_t x2) {
     if (k < NSTUB && !g_stub_seen[k]++) GLOG("[RED] %s called: not implemented, returns 0 (x0=%#llx x1=%#llx x2=%#llx)", g_stub_name[k], x0, x1, x2);
     return 0;
 }
+#ifndef DM_GUEST_CPU_DYNARMIC
 __asm__(".text\n.p2align 2\ngl_stub_entry:\n    mov x3, x2\n    mov x2, x1\n    mov x1, x0\n    mov x0, x9\n    b _gl_stub_c\n"
         ".p2align 3\n.globl _gl_stubs\n.private_extern _gl_stubs\n_gl_stubs:\n.set gl_stub_k, 0\n.rept 4096\n    mov x9, #gl_stub_k\n    b gl_stub_entry\n.set gl_stub_k, gl_stub_k + 1\n.endr\n");
 extern const char gl_stubs[];   // 8 bytes a stub
@@ -2046,6 +2061,22 @@ static void *gl_stub(const char *name) {
     g_stub_name[g_nstub] = name;   // the game's own string (its loader's name table)
     return (void *)(gl_stubs + 8 * g_nstub++);
 }
+#else
+static uint64_t gl_stub_translated(uint64_t x0, uint64_t x1, uint64_t x2) {
+    static int once;
+    if (!once++) GLOG("[RED] an unimplemented GL function was called on Intel (x0=%#llx x1=%#llx x2=%#llx)",
+                      (unsigned long long)x0, (unsigned long long)x1, (unsigned long long)x2);
+    return 0;
+}
+static void *gl_stub(const char *name) {
+    static int on = -1;
+    if (on < 0) on = getenv("DM_GL_STUBS") && atoi(getenv("DM_GL_STUBS"));
+    if (!on || g_nstub == NSTUB) return NULL;
+    g_stub_name[g_nstub++] = name;
+    // One synthetic HLE entry is enough: missing GL functions all return zero.
+    return dm_guest_cpu_hle_stub((void *)gl_stub_translated);
+}
+#endif
 // A name the loader asks for and the layer does not implement gets a null pointer, which is the documented meaning of "not there" (many loaders ask for the
 // whole GL 4.6 list and only call a few). The cost is that calling one jumps to address 0 with nothing in the log to say which: `[RED] CRASH sig=11 addr=0
 // pc=0 lr=<the blr's return address>` is that mistake. DM_GL_MISSES=1 prints every missing name once, and DM_GL_STUBS=1 replaces them with stubs that report

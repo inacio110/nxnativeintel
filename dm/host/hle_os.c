@@ -146,7 +146,7 @@ HLE_FORCE("getenv", "the game profile's game_env answers its names; the SDK's ow
     static char *(*orig)(const char *);
     size_t n = name ? strlen(name) : 0;
     for (const char *const *p = game_env(); n && *p; p++) if (!strncmp(*p, name, n) && (*p)[n] == '=') return (char *)*p + n + 1;
-    if (!orig && !(orig = guest_sym("getenv"))) return NULL;
+    if (!orig && !(orig = guest_call_sym("getenv"))) return NULL;
     return orig(name);
 }
 

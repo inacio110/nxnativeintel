@@ -106,7 +106,7 @@ static const void *font_payload(const void *p) {
 static uint32_t (*font_load)(void *, char *, const void *, unsigned, unsigned);
 static pthread_once_t font_load_once = PTHREAD_ONCE_INIT;
 static void font_load_init(void) {
-    font_load = guest_sym("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj");
+    font_load = guest_call_sym("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj");
     if (!font_load) die("ScalableFontEngine::LoadFont not found in the guest");
 }
 HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFTTF allocation base → TTF payload; parsing and errors stay in the SDK", uint32_t, h_font_LoadFont, void *self, char *name, const void *data, unsigned index, unsigned capacity) {
@@ -121,7 +121,7 @@ HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine8LoadFontEPcPKvjj", "shared font BFT
 static struct { void *self, *game, *host; } font_work[FONT_ENGINES];
 HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj", "a work buffer the stand-in font fits in; the engine itself stays in the SDK", void, h_font_Initialize, void *self, void *buf, unsigned size) {
     static void (*init)(void *, void *, unsigned);
-    if (!init) init = guest_sym("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj");
+    if (!init) init = guest_call_sym("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj");
     if (size < FONT_WORK_MIN) {
         pthread_mutex_lock(&font_mu);
         int i = 0;
@@ -137,7 +137,7 @@ HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine10InitializeEPvj", "a work buffer th
 }
 HLE_FORCE("_ZN2nn6fontll18ScalableFontEngine22GetPointerToWorkBufferEv", "the game's own buffer, also when the engine runs on host memory", void *, h_font_WorkBuffer, void *self) {
     static void *(*get)(void *);
-    if (!get) get = guest_sym("_ZN2nn6fontll18ScalableFontEngine22GetPointerToWorkBufferEv");
+    if (!get) get = guest_call_sym("_ZN2nn6fontll18ScalableFontEngine22GetPointerToWorkBufferEv");
     void *game = NULL;
     pthread_mutex_lock(&font_mu);
     for (int i = 0; i < FONT_ENGINES && font_work[i].self; i++) if (font_work[i].self == self) game = font_work[i].game;

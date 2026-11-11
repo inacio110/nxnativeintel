@@ -43,6 +43,9 @@ static int g_log;
     __attribute__((used, section("__DATA,swhle"))) static const hle_ent e_##name = {#name, (void *)h_##name}; \
     static ret h_##name(__VA_ARGS__)
 // VKB: the same, run on the thread's big host stack (hle_bigstack.c; register arguments only): for the functions that call into Metal on game threads, whose stacks can be small
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define VKB(name, ret, ...) VK(name, ret, __VA_ARGS__)
+#else
 #define VKB(name, ret, ...)                                                                      \
     static ret h_##name(__VA_ARGS__) __attribute__((used));                                      \
     static const PFN_##name chk_##name __attribute__((unused)) = h_##name;                       \
@@ -51,6 +54,7 @@ static int g_log;
             "    adrp x16, _h_" #name "@PAGE\n    add x16, x16, _h_" #name "@PAGEOFF\n    b _dm_bigstack_enter\n"); \
     __attribute__((used, section("__DATA,swhle"))) static const hle_ent e_##name = {#name, (void *)h_##name##_bs}; \
     static ret h_##name(__VA_ARGS__)
+#endif
 
 static uint32_t umin(uint32_t a, uint32_t b) { return a < b ? a : b; }
 static uint32_t umax(uint32_t a, uint32_t b) { return a > b ? a : b; }
@@ -1755,6 +1759,9 @@ static void *vk_lookup(const char *name) {
         if (pass && (n < 4 || strcmp(name + n - 3, "KHR"))) break;   // second pass: an extension function promoted to core under the name without KHR
         for (unsigned long i = 0; i < sz / sizeof *sec && !fn; i++) if (!strncmp(sec[i].name, name, len) && !sec[i].name[len]) fn = sec[i].fn;
     }
+#ifdef DM_GUEST_CPU_DYNARMIC
+    if (fn) fn = dm_hle_guest_callable(fn);
+#endif
     static const char *seen[512]; static int nseen; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mu);
     int known = 0; for (int i = 0; i < nseen; i++) if (!strcmp(seen[i], name)) { known = 1; break; }

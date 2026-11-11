@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#ifndef DM_GUEST_CPU_DYNARMIC
 void crash_set_trap_hook(int (*fn)(ucontext_t *uc));
 #if !TARGET_OS_IPHONE
 // Syntax module:offset[@x0 offset]. Put a brk at the guest address; on hit print x0..x3 (and the readable strings they point to) and a backtrace, then execute the original instruction from a trampoline slot and jump back.
@@ -419,3 +420,9 @@ void probe_install(void) {
     watch_install();
 #endif
 }
+#else
+// The translated guest has no executable AArch64 text to patch with BRK
+// instructions. Keep the startup hook present; Dynarmic diagnostics will be
+// added at the translated-PC boundary instead.
+void probe_install(void) {}
+#endif

@@ -8,7 +8,7 @@ HLE_FORCE("_ZN2nn5codec19HardwareOpusDecoderC1Ei", "hwopus service; replaced by 
           void, h_codec_HwOpusCtor, void *self, int option) {
     (void)option;
     static void (*soft_ctor)(void *);
-    if (!soft_ctor && !(soft_ctor = guest_sym("_ZN2nn5codec11OpusDecoderC1Ev"))) die("missing the OpusDecoder constructor");
+    if (!soft_ctor && !(soft_ctor = guest_call_sym("_ZN2nn5codec11OpusDecoderC1Ev"))) die("missing the OpusDecoder constructor");
     soft_ctor(self);
 }
 
@@ -16,7 +16,7 @@ HLE_FORCE("_ZN2nn5codec19HardwareOpusDecoderC1Ei", "hwopus service; replaced by 
 // Each call goes to the sdk's software C interface instead. The software decoder state lives in a host block kept per game decoder object (objmap), so the size of the
 // game's HardwareOpusDecoderType does not matter; the game's work buffer is sized by GetOpusDecoderWorkBufferSize and handed to the software decoder as is.
 #define SOFT_OPUS_STATE 0x200   // bytes for the software OpusDecoderType (larger than the SDK's)
-static void *opus_fn(const char *name) { void *f = guest_sym(name); if (!f) die("sdk lacks %s", name); return f; }
+static void *opus_fn(const char *name) { void *f = guest_call_sym(name); if (!f) die("sdk lacks %s", name); return f; }
 // A decoder of a manager (SDK 21's form, below) is kept in objmap under gd + 1, the older interface's software state under gd: one key for both made the manager's calls read a software state as an opus_dec
 // whenever its +0x10 (the work buffer's size in Kirby Air Riders, SDK 20) was not 0, and FinalizeHardwareOpusDecoder crashed on a null decoder list
 #define OPUS_MGR_KEY(gd) ((const char *)(gd) + 1)

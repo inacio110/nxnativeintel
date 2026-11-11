@@ -9,6 +9,9 @@
 // Every implementation gets a compile-time signature check against the prototypes in nvn_protos.h (NVNboolean parameters are received as uint32_t, only the low 8 bits are looked at).
 // Environment switches: DM_NVN_FRAMES=N prints the call table per frame for the first N frames (default 3); DM_NVN_TSV=path writes the per-frame call table and timing to a TSV (DM_NVN_TSV_CALLS=0 writes timing only); DM_SLOWFRAME=1 writes only the per-frame breakdown of dropped frames to the log; DM_NVN_LOG=1 logs object creation.
 #include "../../host/hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "../../host/guest_cpu.h"
+#endif
 #include "nvn_protos.h"
 #include "nvn_count.h"
 #include "nvn_tex.h"
@@ -45,7 +48,9 @@
 typedef struct { _Atomic uint64_t cnt; void *fn; } nvn_slot_t;
 nvn_slot_t nvn_slot[NVN_NFUNC];                 // The thunk accesses it by i*16; the layout must not change
 _Static_assert(sizeof(nvn_slot_t) == 16, "the trampolines are addressed in 16-byte steps");
+#ifndef DM_GUEST_CPU_DYNARMIC
 extern void *nvn_thunk[NVN_NFUNC], *nvn_thunk_fast[NVN_NFUNC];
+#endif
 // Call counts (the counting trampolines, nvn_thunks.S): only when asked for (DM_NVN_COUNT=1, or a per-frame table DM_NVN_TSV with its call rows: DM_NVN_TSV_CALLS=0 writes only timing), as
 // each count is an atomic add on a cache line all recording threads share. Otherwise the game gets the uncounted trampolines and the per-frame call lines are not written
 static int nvn_counting(void) {
@@ -54,9 +59,21 @@ static int nvn_counting(void) {
     return v;
 }
 extern const char *nvn_names[NVN_NFUNC];
+#ifndef DM_GUEST_CPU_DYNARMIC
 extern void nvn_unimpl_entry(void);
 extern void nvn_prof_entry(void);
 extern void nvn_big_entry(void);
+#else
+// The translated path does not link the AArch64 NVN assembly entries.  This
+// fallback keeps an unsupported name callable through the same guest ABI.
+static uint64_t nvn_unimpl_intel(uint64_t x0, uint64_t x1, uint64_t x2) {
+    static _Atomic int once;
+    if (!atomic_exchange(&once, 1))
+        LOG("[RED] NVN unimplemented function called on Intel (x0=%#llx x1=%#llx x2=%#llx)",
+            (unsigned long long)x0, (unsigned long long)x1, (unsigned long long)x2);
+    return 0;
+}
+#endif
 void *nvn_big_real[NVN_NFUNC];            // the real implementation of functions that run on the big host stack (nvn_entry.S nvn_big_entry)
 void *nvn_real[NVN_NFUNC];               // DM_NVN_PROF: the real implementation called by the timing wrapper
 _Atomic uint64_t nvn_prof_ticks[NVN_NFUNC]; // DM_NVN_PROF: cumulative time of each function (cntvct counts)
@@ -97,7 +114,11 @@ static void nvn_init_slots(void) {
     unsigned long sz;
     const nvn_impl *im = (const nvn_impl *)getsectiondata(&_mh_execute_header, "__DATA", "swnvn", &sz);
     unsigned nim = im ? (unsigned)(sz / sizeof *im) : 0, hit = 0;
+#ifdef DM_GUEST_CPU_DYNARMIC
+    for (unsigned i = 0; i < NVN_NFUNC; i++) nvn_slot[i].fn = (void *)nvn_unimpl_intel;
+#else
     for (unsigned i = 0; i < NVN_NFUNC; i++) nvn_slot[i].fn = (void *)nvn_unimpl_entry;
+#endif
     for (unsigned k = 0; k < nim; k++) {
         unsigned i = 0;
         while (i < NVN_NFUNC && strcmp(nvn_names[i], im[k].name)) i++;
@@ -109,8 +130,19 @@ static void nvn_init_slots(void) {
 
 static void *nvn_lookup(const char *name) {
     nvn_init_slots();
-    for (unsigned i = 0; i < NVN_NFUNC; i++)
-        if (!strcmp(nvn_names[i], name)) return nvn_counting() ? nvn_thunk[i] : nvn_thunk_fast[i];
+    for (unsigned i = 0; i < NVN_NFUNC; i++) if (!strcmp(nvn_names[i], name)) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+        // The game receives an AArch64 address.  The host implementation is
+        // entered via a synthetic SVC, never by executing its x86_64 bytes as
+        // guest code.  Counting/profiling wrappers are added after bring-up.
+        (void)nvn_counting();
+        void *stub = dm_guest_cpu_hle_stub(nvn_slot[i].fn);
+        if (!stub) die("translated NVN stub table full at %s", name);
+        return stub;
+#else
+        return nvn_counting() ? nvn_thunk[i] : nvn_thunk_fast[i];
+#endif
+    }
     LOG("[RED] NVN address lookup of an unknown name: %s", name ? name : "(null)");
     return NULL;
 }
@@ -233,7 +265,7 @@ NVN(nvnDeviceGetImageHandle, NVNimageHandle, const NVNdevice *d, int id) { (void
 NVN(nvnDeviceGetSeparateTextureHandle, NVNseparateTextureHandle, const NVNdevice *d, int id) { (void)d; return (NVNseparateTextureHandle){(uint64_t)id}; }
 NVN(nvnDeviceGetSeparateSamplerHandle, NVNseparateSamplerHandle, const NVNdevice *d, int id) { (void)d; return (NVNseparateSamplerHandle){(uint64_t)id << 20}; }
 NVN(nvnDeviceInstallDebugCallback, void, NVNdevice *d, const PFNNVNDEBUGCALLBACKPROC cb, void *data, uint32_t enable) {
-    dev_t_ *o = (dev_t_ *)d; o->dbg_cb = B(enable) ? (void *)cb : NULL; o->dbg_data = data;
+    dev_t_ *o = (dev_t_ *)d; o->dbg_cb = guest_call_addr(B(enable) ? (void *)cb : NULL); o->dbg_data = data;
 }
 NVN(nvnDeviceSetWindowOriginMode, void, NVNdevice *d, NVNwindowOriginMode m) { ((dev_t_ *)d)->origin = m; mtl_set_origin_lower_left(m == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT); LOG("[nvn] window origin %s", m ? "upper left (as D3D / Metal)" : "lower left (GL)"); }
 NVN(nvnDeviceSetDepthMode, void, NVNdevice *d, NVNdepthMode m) { ((dev_t_ *)d)->depth_mode = m; mtl_set_depth_zero(m != 0); LOG("[nvn] depth mode %s", m ? "near=0 (as D3D / Metal)" : "near=-w (GL)"); }
@@ -914,7 +946,7 @@ NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
     memset(c, 0, sizeof(cmd_t)); CB(c)->magic = MAGIC('C', 'M', 'D', 'B'); CB(c)->dev = d; return 1;
 }
 NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) { CB(c)->magic = 0; }
-NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb; }
+NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = (PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC)guest_call_addr((void *)cb); }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
 static uint8_t *align8(uint8_t *p) { return (uint8_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7); }
 // Diagnostic DM_NVN_CMDSTAT=1: every 300 frames log one line of command recording usage -- how many bytes / records were recorded per frame, how large a command memory segment the game gives each time, how many out-of-memory callbacks per frame, how many host-supplied segments,
@@ -1722,12 +1754,17 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
         unsigned i = 0;
         while (i < NVN_NFUNC && strcmp(nvn_names[i], g_nops[k])) i++;
         if (i == NVN_NFUNC) die("NVN empty implementation %s is not in main's name table", g_nops[k]);
+#ifdef DM_GUEST_CPU_DYNARMIC
+        if (nvn_slot[i].fn != (void *)nvn_unimpl_intel) die("NVN %s has an implementation and is also listed as an empty implementation", g_nops[k]);
+#else
         if (nvn_slot[i].fn != (void *)nvn_unimpl_entry) die("NVN %s has an implementation and is also listed as an empty implementation", g_nops[k]);
+#endif
         nvn_slot[i].fn = (void *)nvn_nop;
     }
     unsigned nnop = sizeof g_nops / sizeof *g_nops;
-    // Implemented functions other than command recording (nvnCommandBuffer*, tens of thousands per frame, where the host only appends records) run on the big host stack: submit / present / object creation do Metal work, and a game thread's stack may be too small (see nvn_entry.S nvn_big_entry)
     unsigned nbig = 0;
+#ifndef DM_GUEST_CPU_DYNARMIC
+    // Implemented functions other than command recording (nvnCommandBuffer*, tens of thousands per frame, where the host only appends records) run on the big host stack: submit / present / object creation do Metal work, and a game thread's stack may be too small (see nvn_entry.S nvn_big_entry)
     for (unsigned i = 0; i < NVN_NFUNC; i++)
         if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && nvn_slot[i].fn != (void *)nvn_nop && strncmp(nvn_names[i], "nvnCommandBuffer", 16)) {
             nvn_big_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_big_entry; nbig++;
@@ -1736,6 +1773,7 @@ __attribute__((constructor)) static void nvn_nops_register(void) {
     if (getenv("DM_NVN_PROF"))
         for (unsigned i = 0; i < NVN_NFUNC; i++)
             if (nvn_slot[i].fn != (void *)nvn_unimpl_entry && strcmp(nvn_names[i], "nvnQueuePresentTexture")) { nvn_real[i] = nvn_slot[i].fn; nvn_slot[i].fn = (void *)nvn_prof_entry; }
+#endif
     LOG("[nvn] null device: %u names, %u implemented (%u semantic + %u empty, %u of them on the large host stack), the other %u go to the red-reporting stub",
         NVN_NFUNC, g_nsem + nnop, g_nsem, nnop, nbig, NVN_NFUNC - g_nsem - nnop);
 }

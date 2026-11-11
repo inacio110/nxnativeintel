@@ -37,6 +37,7 @@ Community projects build on nxnative with tools to turn your games into apps for
 ## Requirements
 
 - **Mac:** Apple silicon, macOS 26.6 or later. Building games requires Xcode 27.2.
+- **Intel Mac:** the experimental AArch64 translation backend is under active development; it is not yet a supported gameplay target. See [Intel Mac port](docs/reference/intel-port.md).
 - **iPhone:** A17 Pro chip or later, with iOS 26 or later.
 - **iPad:** M1 chip or later, with iPadOS 26 or later.
 
@@ -59,7 +60,7 @@ The shaders are built with Xcode 27.2's Metal compiler. Select it before step 1:
 ```
 xcodebuild -downloadComponent MetalToolchain
 git clone https://github.com/seedds/nxnative.git && cd nxnative
-brew install xcodegen zstd glslang
+brew install xcodegen cmake boost zstd glslang
 python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 ```
 

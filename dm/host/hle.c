@@ -1,5 +1,8 @@
 // Import resolution (implemented ones go to the host, the rest go to named stubs) and host gate dispatch.
 #include "hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <dlfcn.h>
@@ -52,14 +55,26 @@ uint64_t resolve_import(module_t *m, const char *name) {
     const hle_ent *e = hle_find(name);
     if (e) {
         if (g_flag.imports) { Dl_info di; dladdr(e->fn, &di); LOG("import %s -> %s", name, di.dli_sname); }
-        void *hlecount_wrap(const char *, const char *, void *); return (uint64_t)hlecount_wrap("HLE", name, e->fn);   // With DM_HLECOUNT it is a counting stub (including the libc passthrough table)
+        void *hlecount_wrap(const char *, const char *, void *);
+        void *fn = hlecount_wrap("HLE", name, e->fn);   // With DM_HLECOUNT it is a counting stub (including the libc passthrough table)
+#ifdef DM_GUEST_CPU_DYNARMIC
+        fn = dm_guest_cpu_hle_stub(fn);
+        if (!fn) die("translated HLE stub table full while resolving %s", name);
+#endif
+        return (uint64_t)fn;
     }
     // Reuse the stub if one was already allocated for the same name (its own hash: the reuse scan over every stub was quadratic in the stub count)
     void *hlecount_wrap(const char *, const char *, void *);
     static unsigned *stub_idx, stub_mask;
     if (stub_idx)
         for (unsigned j = name_h(name) & stub_mask; stub_idx[j]; j = (j + 1) & stub_mask)
-            if (!strcmp(g_stub_name[stub_idx[j] - 1], name)) return (uint64_t)hlecount_wrap("STUB", name, (void *)&unimpl_stubs[stub_idx[j] - 1]);
+            if (!strcmp(g_stub_name[stub_idx[j] - 1], name)) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+                return (uint64_t)dm_guest_cpu_unimplemented_stub(stub_idx[j] - 1);
+#else
+                return (uint64_t)hlecount_wrap("STUB", name, (void *)&unimpl_stubs[stub_idx[j] - 1]);
+#endif
+            }
     if (g_nstub >= MAX_STUB) die("stub overflow");
     unsigned k = g_nstub++;
     g_stub_name[k] = name;
@@ -75,7 +90,11 @@ uint64_t resolve_import(module_t *m, const char *name) {
         for (unsigned j = name_h(name) & stub_mask;; j = (j + 1) & stub_mask)
             if (!stub_idx[j]) { stub_idx[j] = k + 1; break; }
     (void)m;
+#ifdef DM_GUEST_CPU_DYNARMIC
+    return (uint64_t)dm_guest_cpu_unimplemented_stub(k);
+#else
     return (uint64_t)hlecount_wrap("STUB", name, (void *)&unimpl_stubs[k]);
+#endif
 }
 
 // The host implements this import (the swhle table), without allocating a stub for it
@@ -117,7 +136,12 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
                 guest_clock_read_wait();
                 uint64_t t = guest_ticks();    // the system counter (19.2 / 31.25 MHz); original instruction mrs xN, cntpct_el0, arg = N
                 // dm_gate does not restore x18 (the Apple platform register): the guest's x18 is the thread slot K18, which every rewritten x18 site reads
-                if (g->arg == 18) pthread_setspecific(g_key18, (void *)(uintptr_t)t); else regs[g->arg] = t;
+                if (g->arg == 18) {
+                    pthread_setspecific(g_key18, (void *)(uintptr_t)t);
+#ifdef DM_GUEST_CPU_DYNARMIC
+                    dm_guest_cpu_set_k18(t);
+#endif
+                } else regs[g->arg] = t;
                 return t;
             }
             case G_OBS: if (g_obs_fn[g->arg & 0xff]) g_obs_fn[g->arg & 0xff](regs, g->arg >> 8); return 0;   // dm_gate writes x0–x29 back: the original values, unless the callback changed one (OBS_STDALLOC_INIT)
@@ -131,3 +155,23 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
         if (!g->ret) die("unknown gate at %#llx", ret_addr);
     }
 }
+
+#ifdef DM_GUEST_CPU_DYNARMIC
+// The translated CPU sees the AArch64 `svc; ret` stubs used for imports and
+// gate entries as ordinary guest instructions.  This is the x86 counterpart
+// of entry.S: the callback receives the same x0..x30 frame that the native
+// gate saved, dispatches it, and the synthetic `ret` returns to the guest.
+void dm_guest_cpu_svc_dispatch(void *unused, uint32_t number, dm_guest_cpu_state *state) {
+    (void)unused;
+    if (number == DM_GUEST_CPU_SVC_GATE) {
+        (void)gate_dispatch(state->x[30], state->x);
+        return;
+    }
+    if (number >= DM_GUEST_CPU_SVC_UNIMPLEMENTED_BASE && number < DM_GUEST_CPU_SVC_HLE_BASE) {
+        state->x[0] = unimpl_c(number - DM_GUEST_CPU_SVC_UNIMPLEMENTED_BASE, state->x);
+        return;
+    }
+    if (dm_guest_cpu_hle_dispatch(number, state) > 0) return;
+    die("translated guest executed an unknown SVC stub %#x", number);
+}
+#endif

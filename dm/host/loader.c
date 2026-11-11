@@ -11,6 +11,9 @@
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include "hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 #if TARGET_OS_IPHONE
 #include <mach/mach.h>
 #endif
@@ -41,11 +44,23 @@ static void create_keys(void) {
 
 // K slot check: the pthread TSD layout is fixed, slot = tpidrro_el0 + 8*key
 static void tsd_check(void) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    static const uint64_t expected[KEY_N] = {
+        DM_GUEST_CPU_TSD_K18, DM_GUEST_CPU_TSD_TLS,
+        DM_GUEST_CPU_TSD_TLR, DM_GUEST_CPU_TSD_GATE,
+    };
+    uint64_t *page = (uint64_t *)(g_mod[0].base + g_mod[0].key_page_off);
+    for (unsigned i = 0; i < KEY_N; i++)
+        if (page[g_mod[0].key_idx[i]] != expected[i])
+            die("translated TSD key offset mismatch for key %u", i);
+    dm_guest_cpu_set_thread_slots(0, 0, 0, 0);
+#else
     pthread_setspecific(g_key18, (void *)0x1234);
     uint64_t base; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(base));
     uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
     if (((uint64_t *)(base & ~7ull))[off / 8] != 0x1234) die("TSD layout mismatch");
     pthread_setspecific(g_key18, 0);
+#endif
 }
 
 static void build_symhash(module_t *m);
@@ -108,6 +123,21 @@ static void *loaded_sym(const char *name) {   // caller holds g_modules_mu, or i
 void *guest_sym(const char *name) {
     pthread_rwlock_rdlock(&g_modules_mu); void *p = loaded_sym(name); pthread_rwlock_unlock(&g_modules_mu);
     return p;
+}
+void *guest_call_sym(const char *name) {
+    void *p = guest_sym(name);
+#ifdef DM_GUEST_CPU_DYNARMIC
+    return p ? dm_guest_cpu_guest_stub(p) : NULL;
+#else
+    return p;
+#endif
+}
+void *guest_call_addr(void *entry) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    return entry ? dm_guest_cpu_guest_stub(entry) : NULL;
+#else
+    return entry;
+#endif
 }
 // For modules with the patch area before the base (patch_off < 0) addresses in the patch area count too, as for modules whose patch area follows the image (crash reports, the GC pause's "in guest code" test)
 module_t *module_of(const void *p) {
@@ -231,7 +261,14 @@ static void *force_lookup(const char *name) {
         unsigned i = g_fidx[j] - 1;
         if (!strcmp(g_force[i].name, name)) {
             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
-            void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
+            void *hlecount_wrap(const char *, const char *, void *);
+            void *fn = hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
+#ifdef DM_GUEST_CPU_DYNARMIC
+            int sret = g_force[i].abi == HLE_ABI_SRET || !strcmp(name, "_ZN2nn3prepo10PlayReport4SendERKNS_7account3UidE");
+            fn = sret ? dm_guest_cpu_hle_sret_stub(fn) : dm_guest_cpu_hle_stub(fn);
+            if (!fn) die("translated HLE stub table full while resolving forced import %s", name);
+#endif
+            return fn;
         }
     }
     return NULL;
@@ -373,7 +410,15 @@ static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: key page out of range", m->name);
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
     memset(page, 0, m->key_page_size);
+#ifdef DM_GUEST_CPU_DYNARMIC
+    static const uint64_t offsets[KEY_N] = {
+        DM_GUEST_CPU_TSD_K18, DM_GUEST_CPU_TSD_TLS,
+        DM_GUEST_CPU_TSD_TLR, DM_GUEST_CPU_TSD_GATE,
+    };
+    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = offsets[i];
+#else
     for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
+#endif
     for (int k = 0; k < KEY_N; k++) if (!page[m->key_idx[k]]) die("%s: key page entry %d is 0 (host key not created) -- the game would read TSD slot 0", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s key page mprotect", m->name);
     if (m->fps_state_off) install_fps_state(m);
@@ -872,6 +917,6 @@ void run_module_inits(void) {
         module_t *m = &g_mod[i];
         if (!m->init || m->nro) continue;   // an NRO's init runs when the game loads it (hle_ro.c)
         LOG("%s: DT_INIT +%#llx (init_array %llu entries)", m->name, m->init, m->init_arraysz / 8);
-        ((void (*)(void))(m->base + m->init))();
+        ((void (*)(void))guest_call_addr(m->base + m->init))();
     }
 }

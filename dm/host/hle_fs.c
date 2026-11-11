@@ -825,8 +825,8 @@ HLE_FORCE("_ZN2nn2fs14CommitSaveDataEPKc", "fsp-srv; same as Commit (SDK 11's ol
 HLE_FORCE("_ZN2nn2fs7UnmountEPKc", "fsp-srv; host mounts are permanent, a no-op, but an add-on content mount releases its name; a mount in the SDK's own table (RAM disk) is released there", void, h_fs_Unmount, const char *name) {
     if (!name) return;
     if (host_mounted(name)) { aoc_release(name); return; }
-    int (*sdk_is_mounted)(const char *) = guest_sym("_ZN2nn2fs9IsMountedEPKc");
-    void (*sdk_unmount)(const char *) = guest_sym("_ZN2nn2fs7UnmountEPKc");
+    int (*sdk_is_mounted)(const char *) = guest_call_sym("_ZN2nn2fs9IsMountedEPKc");
+    void (*sdk_unmount)(const char *) = guest_call_sym("_ZN2nn2fs7UnmountEPKc");
     if (!sdk_is_mounted || !sdk_unmount || !sdk_is_mounted(name)) return;
     LOG("fs unmount %s: in the SDK's own mount table, released there", name);
     sdk_unmount(name);

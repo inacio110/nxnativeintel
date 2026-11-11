@@ -7,6 +7,9 @@
 // gives it (the work buffer's last part), as on Horizon. On the Mac the code memory is a MAP_JIT mapping at one address for the plugin and the game (yuzu maps it the same way), writable
 // only while the plugin runs on that thread (pthread_jit_write_protect_np). iOS runs no code made at run time: there GenerateCode is served from a capture (below).
 #include "hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 #include <TargetConditionals.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <sys/mman.h>
@@ -43,7 +46,17 @@ static void *jit_resolve(const char *name) {
         {"memcpy", (void *)memcpy}, {"memmove", (void *)memmove}, {"memset", (void *)memset}, {"PanicForPlugin", (void *)jit_panic},
         {"_ZN2nn4diag6detail9AbortImplEPKcS3_S3_i", (void *)jit_abort}, {"_ZN2nn6detail21UnexpectedDefaultImplEPKcS2_i", (void *)jit_unexpected},
     };
-    for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (name && !strcmp(name, t[i].name)) return t[i].fn;
+    for (unsigned i = 0; i < sizeof t / sizeof *t; i++) if (name && !strcmp(name, t[i].name)) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+        // The plugin is translated AArch64 code. Returning the host function
+        // address here would make its BLR jump interpret x86_64 bytes as
+        // AArch64 instructions. The synthetic HLE entry preserves the guest
+        // ABI and enters the native helper through the common bridge.
+        return dm_guest_cpu_hle_stub(t[i].fn);
+#else
+        return t[i].fn;
+#endif
+    }
     LOG("[RED] JIT plugin asks for %s, which the host does not provide", name ? name : "(null)");
     return NULL;
 }
@@ -251,15 +264,22 @@ HLE_FORCE("_ZN2nn3jit20CreateJitEnvironmentEPNS0_9JitHandleERKNS0_27JitEnvironme
     e->cfg = (jit_config){{e->rx, rx_size}, {e->ro, ro_size}, {(uint64_t)(work + rx_size + ro_size), tmem_size}, {e->rx, rx_size}, {e->ro, ro_size}};
     nro_load_alone(m);
     // As the service loads a plugin (yuzu LoadPlugin): its _init, GetVersion (1), ResolveBasicSymbols, SetupDiagnostics (off), Configure, OnPrepared
-    void *gv = module_sym(m, "nnjitpluginGetVersion"), *rb = module_sym(m, "nnjitpluginResolveBasicSymbols"), *sd = module_sym(m, "nnjitpluginSetupDiagnostics"),
-         *cf = module_sym(m, "nnjitpluginConfigure"), *op = module_sym(m, "nnjitpluginOnPrepared");
-    e->gen = module_sym(m, "nnjitpluginGenerateCode"); e->ctl = module_sym(m, "nnjitpluginControl");
+    void *gv = guest_call_addr(module_sym(m, "nnjitpluginGetVersion")), *rb = guest_call_addr(module_sym(m, "nnjitpluginResolveBasicSymbols")),
+         *sd = guest_call_addr(module_sym(m, "nnjitpluginSetupDiagnostics")), *cf = guest_call_addr(module_sym(m, "nnjitpluginConfigure")),
+         *op = guest_call_addr(module_sym(m, "nnjitpluginOnPrepared"));
+    e->gen = guest_call_addr(module_sym(m, "nnjitpluginGenerateCode"));
+    e->ctl = guest_call_addr(module_sym(m, "nnjitpluginControl"));
     if (!gv || !cf || !e->gen || !op) die("jit: %s lacks the plugin entry points (GetVersion, Configure, GenerateCode, OnPrepared)", m->name);
-    if (m->init) ((void (*)(void))(m->base + m->init))();
+    if (m->init) ((void (*)(void))guest_call_addr(m->base + m->init))();
     uint64_t ver = ((uint64_t (*)(void))gv)();
     if (ver != 1) die("jit: %s is plugin version %llu, the service takes 1", m->name, (unsigned long long)ver);
-    if (rb) ((void (*)(void *))rb)((void *)jit_resolve);
-    void *res = (void *)jit_resolve;
+    void *resolve = (void *)jit_resolve;
+#ifdef DM_GUEST_CPU_DYNARMIC
+    resolve = dm_guest_cpu_hle_stub(resolve);
+    if (!resolve) die("jit: cannot allocate the translated ResolveBasicSymbols callback");
+#endif
+    if (rb) ((void (*)(void *))rb)(resolve);
+    void *res = resolve;
     if (sd) ((void (*)(uint32_t, void **))sd)(0, &res);
     uint32_t flags = 0;
     ((void (*)(uint32_t *))cf)(&flags);
@@ -275,7 +295,7 @@ HLE_FORCE("_ZN2nn3jit21DestroyJitEnvironmentENS0_9JitHandleE", "unload the plugi
     LOG("jit::DestroyJitEnvironment: GenerateCode %llu / %llu / %llu / %llu calls (commands 1-4)", (unsigned long long)e->ncalls[1], (unsigned long long)e->ncalls[2],
         (unsigned long long)e->ncalls[3], (unsigned long long)e->ncalls[4]);
     if (e->plugin) {
-        if (e->plugin->fini) ((void (*)(void))(e->plugin->base + e->plugin->fini))();
+        if (e->plugin->fini) ((void (*)(void))guest_call_addr(e->plugin->base + e->plugin->fini))();
         e->plugin->loaded = 0;
         munmap((void *)e->rx, e->rx_size);
     }   // a served image stays mapped in the layout
@@ -284,7 +304,7 @@ HLE_FORCE("_ZN2nn3jit21DestroyJitEnvironmentENS0_9JitHandleE", "unload the plugi
 }
 
 typedef struct { uint64_t rx, rx_size, ro, ro_size; } jit_info;
-HLE_FORCE("_ZN2nn3jit21GetJitEnvironmentInfoENS0_9JitHandleE", "where the code and data memory are mapped in the game", jit_info, h_jit_Info, jit_env *e) {
+HLE_FORCE_SRET("_ZN2nn3jit21GetJitEnvironmentInfoENS0_9JitHandleE", "where the code and data memory are mapped in the game", jit_info, h_jit_Info, jit_env *e) {
     return (jit_info){e->rx, e->rx_size, e->ro, e->ro_size};
 }
 

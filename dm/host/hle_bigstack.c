@@ -13,6 +13,15 @@
 #include <sys/mman.h>
 #include "dm.h"
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+
+// Dynarmic runs translated code on the host pthread stack, so an ARM64
+// stack-switch entry is neither needed nor valid in an Intel object file.
+// Keep the call-site helper used by existing HLE implementations.
+void *dm_bigstack_caller(void *ra) { return ra; }
+
+#else
+
 int dm_guest_as_contains(uintptr_t a);   // hle_svc.c
 
 #define BS_SIZE (512u << 10)
@@ -95,3 +104,5 @@ void *dm_bigstack_caller(void *ra) {
     void **top = ra == (void *)dm_bigstack_ret ? pthread_getspecific(g_bs_key) : NULL;   // set: a switch happened on this thread
     return top ? top[-1] : ra;
 }
+
+#endif

@@ -2,7 +2,6 @@
 // The host has no nvdrv: the SDK aborts when the decoder thread opens the device. Extractor::SetDataSource returns 0x1000 (the same code the SDK returns when it has no implementation object); Engage's Unity demuxes WebM itself and does not use it.
 // The host takes over Decoder (below; VP8 / VP9 are decoded with libvpx, H.264 with VideoToolbox in hle_movie_avc.c, Vorbis audio with stb_vorbis): Engage's movies are 103 VP9 WebM files under RomFS/Data/StreamingAssets/Movie (2.7 GB, no audio track), and the game does not go on until the opening movie S01F has played.
 #include "hle.h"
-#include <arm_neon.h>
 #include <mach/mach.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -119,11 +118,11 @@ static struct {
 #define MD_PLAYING_NS 500000000ull
 static _Atomic uint64_t g_movie_pic_ns;   // when a video decoder last handed out a picture (0 = stopped since)
 int dm_movie_playing(void) { uint64_t t = atomic_load_explicit(&g_movie_pic_ns, memory_order_relaxed); return t && now_ns() - t < MD_PLAYING_NS; }
-static void *msym(const char *n) { void *p = guest_sym(n); if (!p) die("movie: missing SDK symbol %s", n); return p; }
+static void *msym(const char *n) { void *p = guest_call_sym(n); if (!p) die("movie: missing SDK symbol %s", n); return p; }
 // SDK 1.3.1 exports mutable Buffer getters. Both overloads take the same this pointer.
 static void *buffer_getter(const char *const_name, const char *mutable_name) {
-    void *p = guest_sym(const_name);
-    if (!p) p = guest_sym(mutable_name);
+    void *p = guest_call_addr(guest_sym(const_name));
+    if (!p) p = guest_call_addr(guest_sym(mutable_name));
     if (!p) die("movie: missing SDK symbol %s or %s", const_name, mutable_name);
     return p;
 }
@@ -623,7 +622,7 @@ HLE_FORCE("_ZN5movie7DecoderD1Ev", "movie decoder destructor (complete object): 
 // object itself goes back through the game's operator delete (guest code, called on the calling guest thread)
 HLE_FORCE("_ZN5movie7DecoderD0Ev", "movie decoder deleting destructor: frees the host object, then the object with operator delete", void, h_movie_DecD0, void **self) {
     md_free(self);
-    static void (*del)(void *); if (!del) del = (void (*)(void *))guest_sym("_ZdlPv");
+    static void (*del)(void *); if (!del) del = (void (*)(void *))guest_call_sym("_ZdlPv");
     if (del) del(self); else LOG("[RED] movie: no operator delete in the game; the decoder object is not freed");
 }
 
@@ -847,7 +846,7 @@ static int md_rendered(mdec_t *d, int i) {
 }
 static int md_out_tex(mdec_t *d, int i, void *buf) {
     // SDK 4's Buffer has no sync object (Dark Souls Remastered's subsdk0 exports no GetNvnSync): the game reads the texture once GetOutputBuffer returns, which the CPU write already satisfies
-    static int sync_looked; if (!sync_looked) { G.nvn_sync = guest_sym("_ZNK5movie6Buffer10GetNvnSyncEv"); sync_looked = 1; }
+    static int sync_looked; if (!sync_looked) { G.nvn_sync = guest_call_sym("_ZNK5movie6Buffer10GetNvnSyncEv"); sync_looked = 1; }
     uint8_t *p = G.data(buf); size_t cap = G.cap(buf);
     if (!p || cap < 8) { LOG("[RED] movie: client buffer in native-texture mode is %zu bytes, needs 8 (a texture object)", cap); return 0x100b; }
     void *tex = p; int tw = 0, th = 0, f = nvn_host_write_texture(tex, NULL, 0, 0, 0, &tw, &th);

@@ -149,6 +149,9 @@ void vp8_rtcd(void);
 #include "vpx_config.h"
 
 #ifdef RTCD_C
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void setup_rtcd_internal(void) {}
+#else
 #include "vpx_ports/arm.h"
 static void setup_rtcd_internal(void)
 {
@@ -158,9 +161,40 @@ static void setup_rtcd_internal(void)
 
 }
 #endif
+#endif
 
 #ifdef __cplusplus
 }  // extern "C"
+#endif
+
+#ifdef DM_GUEST_CPU_DYNARMIC
+/* The Intel snapshot uses the portable decoder C functions. */
+#define vp8_bilinear_predict16x16 vp8_bilinear_predict16x16_c
+#define vp8_bilinear_predict4x4 vp8_bilinear_predict4x4_c
+#define vp8_bilinear_predict8x4 vp8_bilinear_predict8x4_c
+#define vp8_bilinear_predict8x8 vp8_bilinear_predict8x8_c
+#define vp8_copy_mem16x16 vp8_copy_mem16x16_c
+#define vp8_copy_mem8x4 vp8_copy_mem8x4_c
+#define vp8_copy_mem8x8 vp8_copy_mem8x8_c
+#define vp8_dc_only_idct_add vp8_dc_only_idct_add_c
+#define vp8_dequant_idct_add vp8_dequant_idct_add_c
+#define vp8_dequant_idct_add_uv_block vp8_dequant_idct_add_uv_block_c
+#define vp8_dequant_idct_add_y_block vp8_dequant_idct_add_y_block_c
+#define vp8_dequantize_b vp8_dequantize_b_c
+#define vp8_loop_filter_bh vp8_loop_filter_bh_c
+#define vp8_loop_filter_bv vp8_loop_filter_bv_c
+#define vp8_loop_filter_mbh vp8_loop_filter_mbh_c
+#define vp8_loop_filter_mbv vp8_loop_filter_mbv_c
+#define vp8_loop_filter_simple_bh vp8_loop_filter_bhs_c
+#define vp8_loop_filter_simple_bv vp8_loop_filter_bvs_c
+#define vp8_loop_filter_simple_mbh vp8_loop_filter_simple_horizontal_edge_c
+#define vp8_loop_filter_simple_mbv vp8_loop_filter_simple_vertical_edge_c
+#define vp8_short_idct4x4llm vp8_short_idct4x4llm_c
+#define vp8_short_inv_walsh4x4 vp8_short_inv_walsh4x4_c
+#define vp8_sixtap_predict16x16 vp8_sixtap_predict16x16_c
+#define vp8_sixtap_predict4x4 vp8_sixtap_predict4x4_c
+#define vp8_sixtap_predict8x4 vp8_sixtap_predict8x4_c
+#define vp8_sixtap_predict8x8 vp8_sixtap_predict8x8_c
 #endif
 
 #endif  // VP8_RTCD_H_

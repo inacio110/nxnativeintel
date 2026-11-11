@@ -135,19 +135,19 @@ HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard8FinalizeEv", "inline keyboard: no applet
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboardD1Ev", "inline keyboard destructor: no applet started, only clears the registration", void, h_ikb_Dtor, void *kb) { h_ikb_Fin(kb); }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard24SetDecidedCancelCallbackEPFvvE", "inline keyboard: records the cancel callback", void, h_ikb_SetCancel, void *kb, ikb_cb0 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].cancel = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].cancel = (ikb_cb0)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 #define IKB_IGNORE_CB(mangled, cname) \
     HLE_FORCE(mangled, "inline keyboard: callbacks are recorded, never called (the keyboard never confirms / edits text / moves the cursor)", void, cname, void *kb, void *fn) { (void)kb; (void)fn; }
 IKB_IGNORE_CB("_ZN2nn5swkbd14InlineKeyboard22SetMovedCursorCallbackEPFvPKNS0_14MovedCursorArgEE", h_ikb_SetMoved)
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard23SetDecidedEnterCallbackEPFvPKNS0_15DecidedEnterArgEE", "inline keyboard: records the enter callback", void, h_ikb_SetEnter, void *kb, ikb_cb1 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].enter = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].enter = (ikb_cb1)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard24SetChangedStringCallbackEPFvPKNS0_16ChangedStringArgEE", "inline keyboard: records the changed-string callback", void, h_ikb_SetChanged, void *kb, ikb_cb1 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].changed = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].changed = (ikb_cb1)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard27SetFinishedKeyboardCallbackEPFvvE", "inline keyboard: records the finished callback, called on the next Calc after Disappear", void, h_ikb_SetFinished, void *kb, ikb_cb0 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].finished = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].finished = (ikb_cb0)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard6AppearERKNS0_9AppearArgE", "inline keyboard appears: the next Calc asks for the text (DM_KBD or the front end's input box)", void, h_ikb_Appear, void *kb, const void *arg) {
     int32_t max = 0; if (arg) memcpy(&max, (const uint8_t *)arg + 0x20, 4);
@@ -186,10 +186,10 @@ HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard4CalcEv", "inline keyboard per-frame upda
     return 1;
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard29SetFinishedInitializeCallbackEPFvvE", "inline keyboard: records the finished-initialize callback, called on the next Calc after Initialize", void, h_ikb_SetFinInit, void *kb, ikb_cb0 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].fin_init = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].fin_init = (ikb_cb0)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard31SetReleasedUserWordInfoCallbackEPFvvE", "inline keyboard: records the released-user-words callback, called on the next Calc after UnsetUserWordInfo", void, h_ikb_SetReleased, void *kb, ikb_cb0 fn) {
-    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].released = fn; pthread_mutex_unlock(&g_ikb_mu);
+    pthread_mutex_lock(&g_ikb_mu); int i = ikb_slot(kb); if (i >= 0) g_ikb[i].released = (ikb_cb0)guest_call_addr((void *)fn); pthread_mutex_unlock(&g_ikb_mu);
 }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard15SetUserWordInfoERKNS0_12UserWordInfoE", "inline keyboard user words (sent through applet storage): the host keeps none", Result, h_ikb_SetWords, void *kb, const void *info) { (void)kb; (void)info; return RES_OK; }
 HLE_FORCE("_ZN2nn5swkbd14InlineKeyboard17UnsetUserWordInfoEv", "inline keyboard user words released: the released callback follows on the next Calc", Result, h_ikb_UnsetWords, void *kb) {

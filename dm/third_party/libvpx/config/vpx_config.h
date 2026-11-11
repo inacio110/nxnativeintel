@@ -10,15 +10,29 @@
 #define VPX_CONFIG_H
 #define RESTRICT    
 #define INLINE      inline
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define VPX_ARCH_ARM 0
+#define VPX_ARCH_AARCH64 0
+#else
 #define VPX_ARCH_ARM 1
 #define VPX_ARCH_AARCH64 1
+#endif
 #define VPX_ARCH_MIPS 0
+#ifdef DM_GUEST_CPU_DYNARMIC
 #define VPX_ARCH_X86 0
 #define VPX_ARCH_X86_64 0
+#else
+#define VPX_ARCH_X86 0
+#define VPX_ARCH_X86_64 0
+#endif
 #define VPX_ARCH_PPC 0
 #define VPX_ARCH_LOONGARCH 0
 #define HAVE_NEON_ASM 0
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_NEON 0
+#else
 #define HAVE_NEON 1
+#endif
 #define HAVE_NEON_DOTPROD 0
 #define HAVE_NEON_I8MM 0
 #define HAVE_SVE 0

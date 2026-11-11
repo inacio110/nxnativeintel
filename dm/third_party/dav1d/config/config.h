@@ -5,7 +5,11 @@
 
 #pragma once
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define ARCH_AARCH64 0
+#else
 #define ARCH_AARCH64 1
+#endif
 
 #define ARCH_ARM 0
 
@@ -29,7 +33,13 @@
 
 #define ARCH_X86_64 0
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+/* The Intel build uses dav1d's portable C path; x86 SIMD sources are not
+ * part of this deliberately small vendored snapshot yet. */
+#define AS_ARCH_LEVEL none
+#else
 #define AS_ARCH_LEVEL armv8.6-a+crc
+#endif
 
 #define CONFIG_16BPC 1
 
@@ -41,17 +51,41 @@
 
 #define HAVE_ALIGNED_ALLOC 1
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_ASM 0
+#else
 #define HAVE_ASM 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_AS_ARCHEXT_DOTPROD_DIRECTIVE 0
+#else
 #define HAVE_AS_ARCHEXT_DOTPROD_DIRECTIVE 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_AS_ARCHEXT_I8MM_DIRECTIVE 0
+#else
 #define HAVE_AS_ARCHEXT_I8MM_DIRECTIVE 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_AS_ARCHEXT_SVE2_DIRECTIVE 0
+#else
 #define HAVE_AS_ARCHEXT_SVE2_DIRECTIVE 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_AS_ARCHEXT_SVE_DIRECTIVE 0
+#else
 #define HAVE_AS_ARCHEXT_SVE_DIRECTIVE 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_AS_ARCH_DIRECTIVE 0
+#else
 #define HAVE_AS_ARCH_DIRECTIVE 1
+#endif
 
 #define HAVE_AS_FUNC 0
 
@@ -61,13 +95,21 @@
 
 #define HAVE_DLSYM 0
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_DOTPROD 0
+#else
 #define HAVE_DOTPROD 1
+#endif
 
 #define HAVE_ELF_AUX_INFO 0
 
 #define HAVE_GETAUXVAL 0
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_I8MM 0
+#else
 #define HAVE_I8MM 1
+#endif
 
 #define HAVE_IO_H 0
 
@@ -87,9 +129,17 @@
 
 #define HAVE_SIGACTION 1
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_SVE 0
+#else
 #define HAVE_SVE 1
+#endif
 
+#ifdef DM_GUEST_CPU_DYNARMIC
+#define HAVE_SVE2 0
+#else
 #define HAVE_SVE2 1
+#endif
 
 #define HAVE_SYS_TYPES_H 1
 

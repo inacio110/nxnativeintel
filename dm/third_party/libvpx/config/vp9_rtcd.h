@@ -63,6 +63,9 @@ void vp9_rtcd(void);
 #include "vpx_config.h"
 
 #ifdef RTCD_C
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void setup_rtcd_internal(void) {}
+#else
 #include "vpx_ports/arm.h"
 static void setup_rtcd_internal(void)
 {
@@ -72,9 +75,17 @@ static void setup_rtcd_internal(void)
 
 }
 #endif
+#endif
 
 #ifdef __cplusplus
 }  // extern "C"
+#endif
+
+#ifdef DM_GUEST_CPU_DYNARMIC
+/* The Intel snapshot uses the portable decoder C functions. */
+#define vp9_iht16x16_256_add vp9_iht16x16_256_add_c
+#define vp9_iht4x4_16_add vp9_iht4x4_16_add_c
+#define vp9_iht8x8_64_add vp9_iht8x8_64_add_c
 #endif
 
 #endif  // VP9_RTCD_H_

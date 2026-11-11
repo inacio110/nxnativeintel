@@ -61,7 +61,14 @@ static void ubc_wait(uint64_t seq) {
     if (atomic_load_explicit(&g_ubc_done, memory_order_acquire) >= seq) return;
     uint64_t w0 = ws_t0();
     for (int spin = 0;; spin++) {   // the copies are queued, so the copy thread is awake or woken by their push
-        if (spin < UBC_SPIN) { __builtin_arm_yield(); if (atomic_load_explicit(&g_ubc_done, memory_order_acquire) >= seq) break; continue; }
+        if (spin < UBC_SPIN) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+            __asm__ volatile("pause" ::: "memory");
+#else
+            __builtin_arm_yield();
+#endif
+            if (atomic_load_explicit(&g_ubc_done, memory_order_acquire) >= seq) break; continue;
+        }
         atomic_fetch_add(&g_ubc_waiting, 1);   // counted first, then the word (as the copy thread's store and count load): it sees this waiter or this sees its store
         uint64_t d = atomic_load(&g_ubc_done);
         if (d < seq) os_sync_wait_on_address(&g_ubc_done, d, sizeof g_ubc_done, OS_SYNC_WAIT_ON_ADDRESS_NONE);

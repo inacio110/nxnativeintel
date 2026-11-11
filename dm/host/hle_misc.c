@@ -147,8 +147,8 @@ static void *ngc_vtable(void) {
     // The table ends at the first value that is neither (Monster Hunter Rise's SDK: 9 slots, then a 1)
     for (; n < NV && (uintptr_t)sdk[2 + n] >= 0x10000; n++) {
         if (module_of(sdk[2 + n]) != mod) { if (module_of(sdk[2 + n])) break; vt[2 + n] = sdk[2 + n]; continue; }   // another guest module: not this class's table
-        vt[2 + n] = (void *)ngc_v_zero;
-        for (unsigned k = 0; k < sizeof M / sizeof *M; k++) if (addr[k] && sdk[2 + n] == addr[k]) { vt[2 + n] = M[k].fn; named++; break; }
+        vt[2 + n] = dm_hle_guest_callable((void *)ngc_v_zero);
+        for (unsigned k = 0; k < sizeof M / sizeof *M; k++) if (addr[k] && sdk[2 + n] == addr[k]) { vt[2 + n] = dm_hle_guest_callable(M[k].fn); named++; break; }
     }
     built = 1; LOG("ngc: ProfanityFilter host vtable of %d slots (%d matched to the class's methods)", n, named);
     return &vt[2];

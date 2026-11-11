@@ -109,6 +109,10 @@ int dm_sdk_nvn2_item(unsigned item, int *out);   // a constant NVN2's own nvnDev
 #define DM_SDK_OLD(major) ((major) > 0 && (major) <= 10)   // SDK 10 and older: NVN API 53, the shared-font address points at the TTF itself
 int dm_game_imports(const char *prefix);   // main or an NRO imports a symbol whose name starts with prefix (loader.c)
 void *guest_sym(const char *name);
+// A callable host-side view of a guest symbol. Native builds return the same
+// AArch64 address; the Intel translated build returns an x86_64 trampoline.
+void *guest_call_sym(const char *name);
+void *guest_call_addr(void *entry);
 module_t *module_of(const void *p);
 // Gate dispatch: rewritten svc / timer reads come in through the common entry, ret_addr = the return point of that gate block, regs points to the saved x0..x30
 uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);

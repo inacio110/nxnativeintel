@@ -1,5 +1,8 @@
 // Bootstrap: after loading the modules, initialize the SDK runtime in the real order of nn::init::Start (sdk+0x2b0470) in the SDK, then enter nnMain.
 #include "dm.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 #include "front.h"
 #include "../gfx/nvn/dmsh_chain.h"
 #include <CoreFoundation/CoreFoundation.h>
@@ -11,6 +14,23 @@
 void probe_install(void); void hid_keys_init(void); void stubs_report(void); void crash_install(void); void guest_thread_init(void); void guest_gate_stack(int own_stack); uint32_t svc_thread_main_init(void);
 typedef void (*fn0)(void); typedef void (*fn2)(uint64_t, uint64_t); typedef void (*fnp)(void *);
 static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbol %s", n); return p; }
+#ifdef DM_GUEST_CPU_DYNARMIC
+extern void dm_guest_cpu_svc_dispatch(void *context, uint32_t number, dm_guest_cpu_state *state); // hle.c
+static void guest_call(void *entry, uint64_t x0, uint64_t x1) {
+    // Startup calls are separated by the loader, so a private stack per call
+    // is sufficient until the general host↔guest call adapter is shared with
+    // all HLE helpers. The stack remains mapped for the whole translated run.
+    uint8_t *stack = calloc(1, 1 << 20);
+    if (!stack) die("translated guest call stack allocation failed");
+    dm_guest_cpu_state state = {};
+    state.x[0] = x0; state.x[1] = x1;
+    state.sp = ((uintptr_t)(stack + (1 << 20) - DM_GUEST_CPU_STACK_ARG_BYTES)) & ~UINTPTR_C(0xF);
+    int rc = dm_guest_cpu_run(&state, (uint64_t)(uintptr_t)entry, 0,
+                              dm_guest_cpu_svc_dispatch, NULL);
+    free(stack);
+    if (rc) die("translated guest startup entry %p stopped: %s", entry, dm_guest_cpu_last_error());
+}
+#endif
 
 // Game arguments: argv[0] is fixed to "game", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
 static char *g_argv[64] = {"game"}; static int g_argc = 1;
@@ -22,21 +42,39 @@ static void guest_main(void) {
     uint32_t hmain = svc_thread_main_init();   // Main thread handle: x0 of nnosInitialize (stored in an sdk global, used by ThreadManagerImplByHorizon); x1 = pointer to the argument area
     // Copy Start step by step: _init_libc1 = __nnmusl_init_locks (initializes the stdio etc. locks as recursive locks; skipping it self-deadlocks on nested locking in putc) + __init_ssp.
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
+#ifdef DM_GUEST_CPU_DYNARMIC
+    guest_call(req("_init_libc0"), 0, 0);
+    LOG(">>> nnosInitialize"); guest_call(req("nnosInitialize"), hmain, 0);
+    guest_call(req("_init_libc1"), 0, 0);
+    LOG(">>> nninitInitializeSdkModule"); guest_call(req("nninitInitializeSdkModule"), 0, 0);
+#else
     ((fn0)req("_init_libc0"))();
     LOG(">>> nnosInitialize"); ((fn2)req("nnosInitialize"))(hmain, 0);
     ((fn0)req("_init_libc1"))();
     LOG(">>> nninitInitializeSdkModule"); ((fn0)req("nninitInitializeSdkModule"))();
+#endif
     // The game arguments are in place before nninitStartup, as on hardware (nn::os takes them from the process argument area in nnosInitialize): Unreal Engine's nninitStartup
     // (Octopath Traveler 0, main+0x12afc) reads -SwitchVirtualAddressSpaceSize= and its other memory options there
+#ifdef DM_GUEST_CPU_DYNARMIC
+    guest_call(req("_ZN2nn2os11SetHostArgcEi"), (uint64_t)(uint32_t)g_argc, 0);
+    guest_call(req("_ZN2nn2os11SetHostArgvEPPc"), (uint64_t)(uintptr_t)g_argv, 0);
+    LOG(">>> nninitStartup"); guest_call(req("nninitStartup"), 0, 0);
+    guest_call(req("_init_libc2"), 0, 0);
+#else
     ((fnp)req("_ZN2nn2os11SetHostArgcEi"))((void *)(uint64_t)g_argc);
     ((fnp)req("_ZN2nn2os11SetHostArgvEPPc"))(g_argv);
     LOG(">>> nninitStartup"); ((fn0)req("nninitStartup"))();
     ((fn0)req("_init_libc2"))();
+#endif
     run_module_inits();   // rtld callback B: each module's DT_INIT (global constructors)
     { void dm_guest_spawn_selftest(void); dm_guest_spawn_selftest(); }   // DM_GUEST_SPAWN_TEST self-test of host-created guest threads (hle_guestthread.c)
     { void dm_oodle_serve_maybe(int); dm_oodle_serve_maybe(1); }   // DM_OODLE_SERVE with a decoder that needs the game's malloc (LZ5, hle_oodle.c)
     { void dm_oodle_job_maybe(void); dm_oodle_job_maybe(); }   // DM_OODLE_JOB: decode a job file with the game's own Oodle and exit (hle_oodle.c, for the offline shader tools)
+#ifdef DM_GUEST_CPU_DYNARMIC
+    LOG(">>> nnMain"); guest_call(req("nnMain"), 0, 0);
+#else
     LOG(">>> nnMain"); ((fn0)req("nnMain"))();
+#endif
     LOG("nnMain returned");
 }
 

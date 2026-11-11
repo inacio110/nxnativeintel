@@ -157,6 +157,15 @@ static void crash_gate(int sig) {
     if (none == me) _exit(128 + sig);
     for (;;) pause();
 }
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void on_crash(int sig, siginfo_t *si, void *uc_) {
+    (void)uc_;
+    crash_gate(sig);
+    fprintf(stderr, "[dm] CRASH sig=%d addr=%p (translated Intel host)\n", sig, si ? si->si_addr : NULL);
+    if (g_dump_hook) g_dump_hook();
+    _exit(128 + sig);
+}
+#else
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
@@ -210,6 +219,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     if (g_dump_hook) g_dump_hook();
     _exit(128 + sig);
 }
+#endif
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
 // The alternate stack is released when the thread exits: the pthread key destructor is called at thread exit (disable the alternate stack first, then free). The game frequently starts short-lived threads, and without releasing each one leaks 64 KiB.
 static pthread_key_t g_altstack_key;

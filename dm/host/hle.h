@@ -3,7 +3,22 @@
 // such parameters are always declared as int/unsigned and truncated by ourselves. Variadic arguments go on the stack on Apple and in registers on Switch ⇒ variadic functions cannot use C's "..." directly.
 #pragma once
 #include "dm.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 typedef struct { const char *name; void *fn; } hle_ent;
+
+// A function pointer placed in guest memory must be callable from translated
+// AArch64 code. Native builds can use the host address directly; the Intel
+// backend exposes a synthetic AArch64 entry that dispatches back to `fn`.
+static inline void *dm_hle_guest_callable(void *fn) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    return fn ? dm_guest_cpu_hle_stub(fn) : NULL;
+#else
+    return fn;
+#endif
+}
+
 #define HLE(mangled, ret, cname, ...)                                                             \
     static ret cname(__VA_ARGS__);                                                                \
     __attribute__((used, section("__DATA,swhle"))) static const hle_ent hle_ent_##cname = {mangled, (void *)cname}; \
@@ -35,20 +50,32 @@ extern __thread uint64_t dm_clock_reads;   // the calling thread's guest reads o
 // Forced takeover: even if the SDK module has a definition, all references to that symbol at load time (JUMP_SLOT/GLOB_DAT/ABS64) are resolved to the host implementation.
 // Used only for the service-layer nn:: (service clients of fs/oe/aoc/pctl...); the SDK's libc++ and nn::os internals do not go into this table.
 // Every entry must state the reason for the takeover; an entry in the table that no module references makes loading report a failure and abort (a wrong list must fail loudly).
-typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
+enum { HLE_ABI_SCALAR = 0, HLE_ABI_SRET = 1 };
+typedef struct { const char *name; void *fn; const char *why; uint32_t abi; } hle_force_ent;
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
     static ret cname(__VA_ARGS__);                                                                \
-    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why, HLE_ABI_SCALAR}; \
+    static ret cname(__VA_ARGS__)
+#define HLE_FORCE_SRET(mangled, why, ret, cname, ...)                                               \
+    static ret cname(__VA_ARGS__);                                                                \
+    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why, HLE_ABI_SRET}; \
     static ret cname(__VA_ARGS__)
 // Same as above, but the implementation runs on this thread's big host stack (hle_bigstack.c): what is registered is a stub generated at compile time (the implementation's address goes into x16, then a jump to dm_bigstack_enter).
 // For take-overs with large stack use (the file system sizes its buffers by PATH_MAX): a game thread's stack can be as small as 8 KB. Only register arguments are carried over (<= 8 integer, <= 8 floating point); not for variadic functions
+#ifdef DM_GUEST_CPU_DYNARMIC
+// There is no native guest stack on the translated path: HLE code already
+// runs on the host pthread's stack, so the ARM64 stack-switch stub would be
+// both unnecessary and invalid x86_64 assembly.
+#define HLE_FORCE_BIG(mangled, why, ret, cname, ...) HLE_FORCE(mangled, why, ret, cname, __VA_ARGS__)
+#else
 #define HLE_FORCE_BIG(mangled, why, ret, cname, ...)                                               \
     static ret cname(__VA_ARGS__) __attribute__((used));                                          \
     extern const char cname##_bs[];                                                               \
     __asm__(".text\n.p2align 2\n.globl _" #cname "_bs\n.private_extern _" #cname "_bs\n_" #cname "_bs:\n" \
             "    adrp x16, _" #cname "@PAGE\n    add x16, x16, _" #cname "@PAGEOFF\n    b _dm_bigstack_enter\n"); \
-    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)(uintptr_t)cname##_bs, why}; \
+    __attribute__((used, section("__DATA,swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)(uintptr_t)cname##_bs, why, HLE_ABI_SCALAR}; \
     static ret cname(__VA_ARGS__)
+#endif
 // The game's call site inside a HLE_FORCE_BIG implementation: pass __builtin_return_address(0), which after a stack switch is the entry's own (hle_bigstack.c)
 void *dm_bigstack_caller(void *ra);
 

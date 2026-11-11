@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <libkern/OSCacheControl.h>
-#if !TARGET_OS_IPHONE
+#if !TARGET_OS_IPHONE && !defined(DM_GUEST_CPU_DYNARMIC)
 #define HC_MAX 8192
 static struct { const char *kind, *name; void *fn; _Atomic uint64_t n; } g_hc[HC_MAX];
 static unsigned g_nhc; static uint32_t *g_hcode; static int g_hon = -1, g_hsealed; static const char *g_hpath;

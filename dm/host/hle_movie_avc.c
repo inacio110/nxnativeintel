@@ -7,7 +7,9 @@
 // SPS pic_order_cnt_type 2 has decode order equal to output order: even High profile needs no reorder queue in that case
 #include "hle.h"
 #include <VideoToolbox/VideoToolbox.h>
+#ifndef DM_GUEST_CPU_DYNARMIC
 #include <arm_neon.h>
+#endif
 #include "hle_movie_avc.h"
 
 #define QMAX 16
@@ -195,7 +197,9 @@ static void take_rgba(CVPixelBufferRef pb, uint8_t *dst, int w, int h) {
     if (cw < w || chh < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
     for (int r = 0; r < chh; r++) {
         const uint8_t *s = src + r * ss; uint8_t *o = dst + (size_t)r * w * 4; int x = 0;
+#ifndef DM_GUEST_CPU_DYNARMIC
         for (; x + 16 <= cw; x += 16) { uint8x16x4_t v = vld4q_u8(s + 4 * x); uint8x16_t t = v.val[0]; v.val[0] = v.val[2]; v.val[2] = t; vst4q_u8(o + 4 * x, v); }
+#endif
         for (; x < cw; x++) { o[4 * x] = s[4 * x + 2]; o[4 * x + 1] = s[4 * x + 1]; o[4 * x + 2] = s[4 * x]; o[4 * x + 3] = 255; }
     }
 }

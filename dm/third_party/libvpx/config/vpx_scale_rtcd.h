@@ -68,6 +68,9 @@ void vpx_scale_rtcd(void);
 #include "vpx_config.h"
 
 #ifdef RTCD_C
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void setup_rtcd_internal(void) {}
+#else
 #include "vpx_ports/arm.h"
 static void setup_rtcd_internal(void)
 {
@@ -76,6 +79,7 @@ static void setup_rtcd_internal(void)
     (void)flags;
 
 }
+#endif
 #endif
 
 #ifdef __cplusplus

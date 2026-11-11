@@ -15,36 +15,49 @@ endif
 endif
 GAME_H = gen/$(GAME)/game_profile.h
 include ../mac/min_os.mk
+CMAKE ?= cmake
 # -O2 as the other native code here (libvpx, dav1d, the launcher; the iOS host builds at Xcode Release's -Os). Not -O3 (no measured gain over -O2) and not -flto, which moves
 # hle_bigstack.c's inline-assembly entry apart from its return path (SIGBUS in dm_bigstack_enter on Breath of the Wild, PR #556)
 CFLAGS=-O2 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
+# DM_GUEST_CPU_DYNARMIC=1 is the experimental Intel build.  It keeps the
+# established arm64 command line untouched and links the translated CPU as a
+# separate C++ archive, so the universal app can select the right host at
+# build time without changing the Apple-silicon path.
+DM_GUEST_CPU_DYNARMIC ?= 0
+INTEL_CPU_BUILD ?= intel/build
+ifeq ($(DM_GUEST_CPU_DYNARMIC),1)
+CFLAGS += -DDM_GUEST_CPU_DYNARMIC
+INTEL_CPU_LIBS = $(shell sed '/^[[:space:]]*$$/d' $(INTEL_CPU_BUILD)/dm-dynarmic-libs.txt 2>/dev/null)
+else
+INTEL_CPU_LIBS =
+endif
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m web_apple.m entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m web_apple.m $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),$(filter-out entry.S guest_cpu_abi_x86_64.S guest_cpu_guest_abi_x86_64.S,$(wildcard *.S)),$(wildcard *.S))
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
-GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
+GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m $(if $(filter 0,$(DM_GUEST_CPU_DYNARMIC)),../gfx/nvn/*.S,) ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
 GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))   # *.inc: nvn_mtl.m includes them (nvn_geometry.inc); an edit there alone used not to rebuild the host
 # Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
 VPX=../third_party/libvpx
-VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
+VPX_SRC=$(sort $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)), $(filter-out $(shell find $(VPX) -path '*/arm/*' -name '*.c') $(VPX)/vpx_ports/aarch64_cpudetect.c,$(shell find $(VPX) -name '*.c')), $(shell find $(VPX) -name '*.c')))
 VPX_OBJ=$(patsubst $(VPX)/%.c,gen/vpx/%.o,$(VPX_SRC))
 VPX_LIB=gen/vpx/libvpx.a
 gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h) ../mac/min_os.mk
 	@mkdir -p $(dir $@)
-	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) -I$(VPX) -I$(VPX)/config -c $< -o $@
+	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),-DDM_GUEST_CPU_DYNARMIC,) -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_LIB): $(VPX_OBJ)
 	rm -f $@; ar rcs $@ $^
 # Third party: dav1d, the AV1 decoder where VideoToolbox has none (hle_movie_av1.c), with its arm64 NEON assembly and its configuration in config/. Its *_tmpl.c files are built
 # through the per-bit-depth wrappers in config/tmpl, and the assembly files other assembly files include (*_tmpl.S, util.S) are not built on their own: the list meson builds
 DAV1D=../third_party/dav1d
-DAV1D_SRC=$(sort $(filter-out %_tmpl.c,$(wildcard $(DAV1D)/src/*.c)) $(DAV1D)/src/arm/cpu.c $(wildcard $(DAV1D)/config/tmpl/*.c) \
-          $(filter-out %_tmpl.S %/util.S,$(wildcard $(DAV1D)/src/arm/64/*.S)))
+DAV1D_SRC=$(sort $(filter-out %_tmpl.c,$(wildcard $(DAV1D)/src/*.c)) $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),,$(DAV1D)/src/arm/cpu.c) $(wildcard $(DAV1D)/config/tmpl/*.c) \
+          $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),,$(filter-out %_tmpl.S %/util.S,$(wildcard $(DAV1D)/src/arm/64/*.S))))
 DAV1D_OBJ=$(patsubst $(DAV1D)/%,gen/dav1d/%.o,$(DAV1D_SRC))
 DAV1D_LIB=gen/dav1d/libdav1d.a
 DAV1D_H=$(wildcard $(DAV1D)/config/*.h $(DAV1D)/src/*.h $(DAV1D)/src/*_tmpl.c $(DAV1D)/src/arm/*.h $(DAV1D)/src/arm/asm.S $(DAV1D)/src/arm/64/*_tmpl.S $(DAV1D)/src/arm/64/util.S $(DAV1D)/include/*/*.h)
 gen/dav1d/%.o: $(DAV1D)/% $(DAV1D_H) ../mac/min_os.mk
 	@mkdir -p $(dir $@)
-	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) -fvisibility=hidden -fomit-frame-pointer -fno-align-functions -I$(DAV1D) -I$(DAV1D)/include -I$(DAV1D)/config -c $< -o $@
+	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) -fvisibility=hidden -fomit-frame-pointer -fno-align-functions $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),-DDM_GUEST_CPU_DYNARMIC,) -I$(DAV1D) -I$(DAV1D)/include -I$(DAV1D)/config -c $< -o $@
 $(DAV1D_LIB): $(DAV1D_OBJ)
 	rm -f $@; ar rcs $@ $^
 # The host's own Metal shaders (dm/gfx/msl/*.metal) compiled for MSL_SDK into gen/msl-<sdk>/host_msl_gen.h (dm/gfx/tools/host_msl.py; dm/gfx/nvn/host_msl.m loads them), so the host
@@ -79,8 +92,17 @@ endif
 .PHONY: FORCE
 FORCE:
 # Makefile: a change to CFLAGS (or the compile line) rebuilds the host
-dmhost: Makefile $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h pad_switch2_apple.h switch2_proto.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
-	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+ifeq ($(DM_GUEST_CPU_DYNARMIC),1)
+dmhost: intel_cpu
+endif
+dmhost: Makefile $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h guest_cpu.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h pad_switch2_apple.h switch2_proto.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
+	$(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),clang++,clang) $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) $(INTEL_CPU_LIBS) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+
+.PHONY: intel_cpu
+intel_cpu:
+	@test "$(DM_GUEST_CPU_DYNARMIC)" = 1
+	$(CMAKE) -S intel -B $(INTEL_CPU_BUILD) -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=$(MACOS_MIN)
+	$(CMAKE) --build $(INTEL_CPU_BUILD) --target dm_guest_cpu --parallel
 clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx and dav1d builds; dmhost_* and *.dSYM beside them, as in .gitignore)
 	rm -rf gen dmhost dmhost_* *.dSYM
 .PHONY: clean

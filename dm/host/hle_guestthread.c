@@ -4,11 +4,14 @@
 // Constraints: must be called on a guest thread (SDK thread creation goes through the SVC gate); not exposed to the game.
 // Self-test DM_GUEST_SPAWN_TEST=1: before guest_main enters nnMain, start one thread that does "SDK malloc/free + lock an nn::os mutex and check that the owner is itself", and report the result after WaitThread finishes.
 #include "hle.h"
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 #include <stdatomic.h>
 #include <unistd.h>
 typedef int (*create_fn)(void *tt, void (*fn)(void *), void *arg, void *stack, size_t size, int prio);
 typedef void (*tt_fn)(void *tt);
-static void *need(const char *n) { void *p = guest_sym(n); if (!p) die("host guest thread: missing symbol %s", n); return p; }
+static void *need(const char *n) { void *p = guest_call_sym(n); if (!p) die("host guest thread: missing symbol %s", n); return p; }
 // an entry shim: first register the thread as host-created (hle_thread.c dm_yield_to_core_peers does not wait for them), then run fn
 typedef struct { void (*fn)(void *); void *arg; } spawn_arg;
 typedef struct { _Alignas(16) uint8_t tt[0x200]; void *stack_alloc; } host_thread;
@@ -16,6 +19,10 @@ void dm_thread_mark_host(void);
 static void spawn_tramp(void *p) { spawn_arg a = *(spawn_arg *)p; free(p); dm_thread_mark_host(); a.fn(a.arg); }
 void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size) {
     spawn_arg *sa = malloc(sizeof *sa); if (!sa) die("host guest thread: allocation failed"); sa->fn = fn; sa->arg = arg; fn = spawn_tramp; arg = sa;
+#ifdef DM_GUEST_CPU_DYNARMIC
+    fn = (void (*)(void *))dm_guest_cpu_hle_stub((void *)fn);
+    if (!fn) die("host guest thread: translated callback stub unavailable");
+#endif
     stack_size = (stack_size + 0xfff) & ~(size_t)0xfff;
     host_thread *t = calloc(1, sizeof *t);                       // ThreadType is first, 0x1c0 bytes with headroom
     if (!t) die("host guest thread: allocation failed");

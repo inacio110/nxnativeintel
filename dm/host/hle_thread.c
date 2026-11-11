@@ -20,6 +20,9 @@
 #include <pthread/qos.h>
 #include <dlfcn.h>
 #include <stdatomic.h>
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include "guest_cpu.h"
+#endif
 
 #define R_TIMEOUT     0xEA01u   // Kernel module 1, description 117
 #define R_CANCELLED   0xEC01u   // 118
@@ -318,7 +321,22 @@ static void lock_acquire_for(thr_t *t, uint64_t addr, uint32_t tag) {
 }
 
 // ---------- Threads ----------
+#ifdef DM_GUEST_CPU_DYNARMIC
+extern void dm_guest_cpu_svc_dispatch(void *context, uint32_t number, dm_guest_cpu_state *state); // hle.c
+static void dm_thread_enter_translated(uint64_t entry, uint64_t arg, uint64_t sp) {
+    dm_guest_cpu_state state = {};
+    state.x[0] = arg;
+    // Leave a mapped window above the initial guest SP for the common host
+    // ABI bridge, which copies AArch64 stack arguments without knowing the
+    // exact prototype of an HLE import.
+    state.sp = sp >= DM_GUEST_CPU_STACK_ARG_BYTES ? sp - DM_GUEST_CPU_STACK_ARG_BYTES : sp;
+    state.sp &= ~UINT64_C(0xf);
+    if (dm_guest_cpu_run(&state, entry, 0, dm_guest_cpu_svc_dispatch, NULL) != 0)
+        die("translated guest thread %#llx stopped: %s", (unsigned long long)entry, dm_guest_cpu_last_error());
+}
+#else
 extern void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp);   // entry.S
+#endif
 uint32_t (*dm_thread_tick_fn)(void);   // Gets the current game tick; registered when diag.c initializes (unit tests do not register it, the tick number is recorded as 0)
 void crash_thread_init(void);
 void guest_thread_init(void);   // thread.c: the single place that sets the per-thread TSD slots (x18, TLS, TLR)
@@ -360,7 +378,11 @@ static void *thread_main(void *p) {
     guest_gate_stack(1);   // the guest runs on its own stack from dm_thread_enter on: this pthread's stack below this frame is where its SVCs run
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); t->entered = 1; pthread_mutex_unlock(&G);
     { char nb[48], hn[64]; snprintf(hn, sizeof hn, "%#x %s", t->handle, thr_name(t, nb, sizeof nb)); pthread_setname_np(hn); }   // the guest's name (set before StartThread) for sample / Instruments
+#ifdef DM_GUEST_CPU_DYNARMIC
+    dm_thread_enter_translated(t->entry, t->arg, t->stack_top);   // Does not return: the guest must exit through ExitThread
+#else
     dm_thread_enter(t->entry, t->arg, t->stack_top);   // Does not return: the guest must exit through ExitThread
+#endif
     die("guest thread entry returned");
 }
 static void thr_free(thr_t *t) {   // Holding G; unlink from the all-threads chain and free
@@ -395,6 +417,24 @@ void dm_thread_returned(void) { die("guest thread entry function returned (Horiz
 //     A thread stopped inside an SVC leaves by the lock-free exit once resumed; with the flag left set, the next pause returned at once while the thread ran guest code, with an empty context
 //     (Aokana: FMOD's stream thread decoded while IL2CPP's liveness pass had set bit 0 of the class words of the objects it used, and jumped through one).
 module_t *module_of(const void *p);
+#ifdef DM_GUEST_CPU_DYNARMIC
+static void on_pause_sig(int sig, siginfo_t *si, void *uc_) {
+    (void)sig; (void)si; (void)uc_;
+    thr_t *t = pthread_getspecific(g_keythr);
+    if (!t || !atomic_load(&t->pause_req) || atomic_load(&t->svc_regs)) return;
+    pthread_mutex_lock(&G);
+    if (t->pause_req) {
+        while (t->pause_req) {
+            t->paused = 1;
+            pthread_cond_broadcast(&t->pcv);
+            pthread_cond_wait(&t->pcv, &G);
+        }
+        t->paused = 0;
+        t->ctx_ok = 0;
+    }
+    pthread_mutex_unlock(&G);
+}
+#else
 static void on_pause_sig(int sig, siginfo_t *si, void *uc_) {
     (void)sig; (void)si;
     thr_t *t = pthread_getspecific(g_keythr);
@@ -417,6 +457,7 @@ static void on_pause_sig(int sig, siginfo_t *si, void *uc_) {
     }
     pthread_mutex_unlock(&G);
 }
+#endif
 // called by the gate on SVC entry / exit (gate_dispatch in hle.c)
 void thr_svc_enter(uint64_t *regs, uint64_t pc) {
     thr_t *t = pthread_getspecific(g_keythr); if (!t) return;
@@ -435,6 +476,11 @@ void thr_svc_leave(void) {
     pthread_mutex_unlock(&G);
 }
 static void pause_install(void) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    // The handler is only a cooperative stop point for translated guest
+    // threads. It deliberately does not inspect the host ucontext: the
+    // AArch64 register context lives in Dynarmic.
+#endif
     struct sigaction sa = {.sa_sigaction = on_pause_sig, .sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART};
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR2, &sa, NULL);
@@ -470,6 +516,14 @@ typedef struct {   // what one dump line needs, copied under G so that a thread 
 // Holding G (thr_free and the exit flag need it, so no thread in the list is freed or leaves meanwhile). Between the suspend and the resume only mach calls and memory reads
 // run: no malloc, no stdio, no dladdr (the suspended thread may hold their locks). The symbols are looked up after every thread runs again
 static void hitch_grab(thr_t *t, hitch_t *h) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    // A translated thread's registers are owned by Dynarmic, not by the
+    // Mach x86_64 thread state. The wait/SVC metadata is still useful.
+    memset(h, 0, sizeof *h);
+    h->handle = t->handle; h->svc = t->last_svc; h->prio = t->prio; h->core = t->core; h->mask = t->mask; h->wkind = t->wkind & 7; h->waddr = t->waddr; h->wkey = t->wkey;
+    h->lr = t->last_lr; h->sleeping = t->sleeping; h->host_work = t->host_work && *t->host_work; h->rs = -1;
+    char nb[48]; snprintf(h->name, sizeof h->name, "%s", thr_name(t, nb, sizeof nb));
+#else
     memset(h, 0, sizeof *h);
     h->handle = t->handle; h->svc = t->last_svc; h->prio = t->prio; h->core = t->core; h->mask = t->mask; h->wkind = t->wkind & 7; h->waddr = t->waddr; h->wkey = t->wkey;
     h->lr = t->last_lr; h->sleeping = t->sleeping; h->host_work = t->host_work && *t->host_work; h->rs = -1;
@@ -490,6 +544,7 @@ static void hitch_grab(thr_t *t, hitch_t *h) {
         }
     }
     thread_resume(t->mport);
+#endif
 }
 static void hitch_log(const hitch_t *h) {
     static const char *kinds[] = {"run", "mutex", "condvar", "address", "sync"};
@@ -668,6 +723,9 @@ int thr_find_by_name(const char *name, pthread_t *out) {
 // State dump (called from crash.c on watchdog / crash; read-only, takes no lock): what each guest thread is waiting on and where its most recent SVC was issued from
 // During a state dump, take the backtrace of other guest threads: suspend → read registers → walk the frame pointer chain (both guest code and gate blocks keep the x29 chain) → resume; only main / sdk frames are printed
 static void thr_bt(thr_t *t) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    (void)t;
+#else
     if (!t->mport || t->exited || t->mport == mach_thread_self()) return;
     if (thread_suspend(t->mport) != KERN_SUCCESS) return;
     arm_thread_state64_t st; mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
@@ -700,6 +758,7 @@ static void thr_bt(thr_t *t) {
         fprintf(stderr, "%s\n", line);
     }
     thread_resume(t->mport);
+#endif
 }
 void svc_thread_dump(void) {
     static const char *kinds[] = {"running/not waiting", "mutex", "condvar", "address", "sync object"};
@@ -746,6 +805,7 @@ void svc_thread_dump(void) {
         thr_bt(t);
     }
     // Threads created by the host itself (graphics present, audio, movie decoding, etc.): not in the guest thread table, enumerated as mach threads, the first 12 frames symbolized with dladdr
+#ifndef DM_GUEST_CPU_DYNARMIC
     thread_act_array_t ths; mach_msg_type_number_t nth = 0;
     if (task_threads(mach_task_self(), &ths, &nth) == KERN_SUCCESS) {
         for (mach_msg_type_number_t i = 0; i < nth; i++) {
@@ -772,6 +832,7 @@ void svc_thread_dump(void) {
         }
         vm_deallocate(mach_task_self(), (vm_address_t)ths, nth * sizeof *ths);
     }
+#endif
 }
 
 // Same-core wake handoffs apply to every game. core_preempt additionally checks
@@ -1303,8 +1364,8 @@ void hle_bind_system_event(void *ev, int autoclear) {      // Must be called on 
     if (wh) return;
     if (!pthread_getspecific(g_keythr)) die("hle_bind_system_event must be called on a guest thread");
     static uint32_t (*create)(void *, int, int); static uint32_t (*getw)(const void *);
-    if (!create) { create = guest_sym("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
-                   getw = guest_sym("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE"); }
+    if (!create) { create = guest_call_sym("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
+                   getw = guest_call_sym("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE"); }
     uint32_t r = create(ev, autoclear, 1);
     if (r) die("CreateSystemEvent failed %#x", r);
     wh = getw(ev);
