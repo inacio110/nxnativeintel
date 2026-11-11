@@ -247,7 +247,9 @@ void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
         const uint8_t *u = im->planes[1] + (size_t)y * im->stride[1], *v = im->planes[2] + (size_t)y * im->stride[2];
         uint8_t *o = dst + (size_t)w * h + (size_t)y * w;
         int x = 0;
+#ifndef DM_GUEST_CPU_DYNARMIC
         for (; x + 16 <= cw2; x += 16) { uint8x16x2_t t = { { vld1q_u8(u + x), vld1q_u8(v + x) } }; vst2q_u8(o + 2 * x, t); }
+#endif
         for (; x < cw2 && 2 * x + 1 < w; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
     }
 }

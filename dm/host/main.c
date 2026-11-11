@@ -24,7 +24,7 @@ static void guest_call(void *entry, uint64_t x0, uint64_t x1) {
     if (!stack) die("translated guest call stack allocation failed");
     dm_guest_cpu_state state = {};
     state.x[0] = x0; state.x[1] = x1;
-    state.sp = ((uintptr_t)(stack + (1 << 20) - DM_GUEST_CPU_STACK_ARG_BYTES)) & ~UINTPTR_C(0xF);
+    state.sp = ((uintptr_t)(stack + (1 << 20) - DM_GUEST_CPU_STACK_ARG_BYTES)) & ~(uintptr_t)0xF;
     int rc = dm_guest_cpu_run(&state, (uint64_t)(uintptr_t)entry, 0,
                               dm_guest_cpu_svc_dispatch, NULL);
     free(stack);

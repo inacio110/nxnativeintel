@@ -14606,10 +14606,12 @@ static void dlss_eval(const p_dlss *c) {
         sc.colorTexture = col; sc.depthTexture = dep; sc.motionTexture = mot; sc.outputTexture = out; sc.exposureTexture = expo;
         sc.inputContentWidth = iw; sc.inputContentHeight = ih;
         if (@available(macOS 27.0, iOS 27.0, *)) {   // the rectangles' corners: all at the origin on the game seen, so an older system loses nothing there
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 270000
             sc.colorContentOffsetX = (NSUInteger)a.base[DLSS_COLOR][0]; sc.colorContentOffsetY = (NSUInteger)a.base[DLSS_COLOR][1];
             sc.depthContentOffsetX = (NSUInteger)a.base[DLSS_DEPTH][0]; sc.depthContentOffsetY = (NSUInteger)a.base[DLSS_DEPTH][1];
             sc.motionContentOffsetX = (NSUInteger)a.base[DLSS_MOTION][0]; sc.motionContentOffsetY = (NSUInteger)a.base[DLSS_MOTION][1];
             sc.outputOffsetX = (NSUInteger)a.base[DLSS_OUTPUT][0]; sc.outputOffsetY = (NSUInteger)a.base[DLSS_OUTPUT][1];
+#endif
         }
         sc.motionVectorScaleX = a.mv[0]; sc.motionVectorScaleY = a.mv[1];
         sc.jitterOffsetX = a.jitter[0]; sc.jitterOffsetY = a.jitter[1];

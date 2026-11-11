@@ -27,16 +27,27 @@ DM_GUEST_CPU_DYNARMIC ?= 0
 INTEL_CPU_BUILD ?= intel/build
 ifeq ($(DM_GUEST_CPU_DYNARMIC),1)
 CFLAGS += -DDM_GUEST_CPU_DYNARMIC
-INTEL_CPU_LIBS = $(shell sed '/^[[:space:]]*$$/d' $(INTEL_CPU_BUILD)/dm-dynarmic-libs.txt 2>/dev/null)
+# Keep the archive list relative to dm/host.  CMake's absolute target paths
+# break the established shell link line when the checkout path contains
+# spaces (for example, under "NX Play Backup").
+INTEL_CPU_LIBS = $(addprefix $(INTEL_CPU_BUILD)/,$(shell sed '/^[[:space:]]*$$/d; s|.*/||' $(INTEL_CPU_BUILD)/dm-dynarmic-libs.txt 2>/dev/null))
+NVN_NAMES_C = gen/nvn_names.c
 else
 INTEL_CPU_LIBS =
+NVN_NAMES_C =
 endif
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m pad_switch2_apple.m $(sort $(wildcard hle_*.c)) front_mac.m web_apple.m $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),$(filter-out entry.S guest_cpu_abi_x86_64.S guest_cpu_guest_abi_x86_64.S,$(wildcard *.S)),$(wildcard *.S))
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
-GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m $(if $(filter 0,$(DM_GUEST_CPU_DYNARMIC)),../gfx/nvn/*.S,) ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
+GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m $(if $(filter 0,$(DM_GUEST_CPU_DYNARMIC)),../gfx/nvn/*.S,) ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m) $(NVN_NAMES_C))
 GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))   # *.inc: nvn_mtl.m includes them (nvn_geometry.inc); an edit there alone used not to rebuild the host
+
+ifneq ($(strip $(NVN_NAMES_C)),)
+$(NVN_NAMES_C): ../gfx/nvn/names.txt ../gfx/tools/gen_nvn_names.py
+	@mkdir -p $(dir $@)
+	python3 ../gfx/tools/gen_nvn_names.py $< $@
+endif
 # Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
 VPX=../third_party/libvpx
 VPX_SRC=$(sort $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)), $(filter-out $(shell find $(VPX) -path '*/arm/*' -name '*.c') $(VPX)/vpx_ports/aarch64_cpudetect.c,$(shell find $(VPX) -name '*.c')), $(shell find $(VPX) -name '*.c')))
@@ -96,7 +107,10 @@ ifeq ($(DM_GUEST_CPU_DYNARMIC),1)
 dmhost: intel_cpu
 endif
 dmhost: Makefile $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h guest_cpu.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h pad_switch2_apple.h switch2_proto.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h pad_hid.h pad_hid_mac.h home_quit.h home_quit_mac.h ctrl_prompt.h front.h $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB) $(DAV1D_LIB) $(MSL_H)
-	$(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),clang++,clang) $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) $(INTEL_CPU_LIBS) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+	# Use clang for the mixed C/Objective-C host sources.  clang++ treats the
+	# .c inputs as C++ on AppleClang; the Intel-only C++ runtime is linked
+	# explicitly after the Dynarmic archives instead.
+	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(MSL_H)) -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I$(DAV1D)/include -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(DAV1D_LIB) $(INTEL_CPU_LIBS) $(if $(filter 1,$(DM_GUEST_CPU_DYNARMIC)),-lc++,) -framework Cocoa -framework WebKit -framework UserNotifications -framework QuartzCore -framework Metal -framework MetalFX -framework GameController -framework CoreBluetooth -framework IOBluetooth -framework CoreHaptics -framework IOKit -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 
 .PHONY: intel_cpu
 intel_cpu:

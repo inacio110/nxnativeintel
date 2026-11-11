@@ -4,6 +4,11 @@
 #include <cstdio>
 #include <cstdint>
 
+// The complete host supplies this callback from hle.c.  The standalone
+// translator smoke target does not link the host service layer, but the weak
+// hook still needs a concrete symbol on macOS when the test executable links.
+extern "C" void dm_guest_cpu_svc_dispatch(void *, uint32_t, dm_guest_cpu_state *) {}
+
 extern "C" uint64_t host_add(uint64_t a, uint64_t b) {
     return a + b;
 }

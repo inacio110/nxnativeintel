@@ -20,8 +20,10 @@
 #include "save_sync.h"
 
 // Every take-over in this file runs on the big host stack (hle_bigstack.c): path buffers are sized by PATH_MAX and one file open takes 6-7 KB of stack, while a game's save thread can have as little as 8 KB (Super Mario 3D World + Bowser's Fury)
+#ifndef DM_GUEST_CPU_DYNARMIC
 #undef HLE_FORCE
 #define HLE_FORCE HLE_FORCE_BIG
+#endif
 
 #define RES_PATH_NOT_FOUND 0x202u      // fs module 2, description 1
 #define RES_PATH_EXISTS    0x402u      // fs module 2, description 2
