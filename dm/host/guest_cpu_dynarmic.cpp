@@ -64,6 +64,13 @@ void store(uint64_t address, T value) {
     std::memcpy(reinterpret_cast<void *>(static_cast<uintptr_t>(address)), &value, sizeof value);
 }
 
+template <typename T>
+bool exclusive_store(uint64_t address, T value, T expected) {
+    return __atomic_compare_exchange_n(
+        reinterpret_cast<T *>(static_cast<uintptr_t>(address)), &expected, value, false,
+        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
 class Callbacks final : public Dynarmic::A64::UserCallbacks {
 public:
     dm_guest_cpu_state *state = nullptr;
@@ -93,6 +100,36 @@ public:
     void MemoryWrite128(uint64_t vaddr, Dynarmic::A64::Vector value) override {
         store(vaddr, value[0]);
         store(vaddr + 8, value[1]);
+    }
+
+    bool MemoryWriteExclusive8(uint64_t vaddr, uint8_t value, uint8_t expected) override {
+        return exclusive_store(vaddr, value, expected);
+    }
+
+    bool MemoryWriteExclusive16(uint64_t vaddr, uint16_t value, uint16_t expected) override {
+        return exclusive_store(vaddr, value, expected);
+    }
+
+    bool MemoryWriteExclusive32(uint64_t vaddr, uint32_t value, uint32_t expected) override {
+        return exclusive_store(vaddr, value, expected);
+    }
+
+    bool MemoryWriteExclusive64(uint64_t vaddr, uint64_t value, uint64_t expected) override {
+        return exclusive_store(vaddr, value, expected);
+    }
+
+    bool MemoryWriteExclusive128(uint64_t vaddr, Dynarmic::A64::Vector value,
+                                 Dynarmic::A64::Vector expected) override {
+        // Dynarmic serializes the translated exclusive sequence through the
+        // global monitor.  Keep the host-side pair together as well; the
+        // 128-bit AArch64 callback has no portable lock-free x86_64 form.
+        static std::mutex lock;
+        std::lock_guard guard{lock};
+        Dynarmic::A64::Vector current{load<uint64_t>(vaddr), load<uint64_t>(vaddr + 8)};
+        if (current != expected) return false;
+        store(vaddr, value[0]);
+        store(vaddr + 8, value[1]);
+        return true;
     }
 
     void InterpreterFallback(uint64_t pc, size_t instructions) override {
