@@ -91,12 +91,12 @@ def swift_sources():   # the settings window, with the iOS launcher's model and 
     return [HERE / 'Launcher.swift', HERE.parent / 'ios/Sources/LauncherSettings.swift', HERE.parent / 'ios/Sources/LauncherRow.swift']
 
 
-def build_launcher(out, minos, clang, swiftc, sdk):   # launcher.c's main and the host's cloud-save code (its send after the host exits), linked by swiftc with the settings window (no Swift main: -parse-as-library)
+def build_launcher(out, minos, clang, swiftc, sdk, arch):   # launcher.c's main and the host's cloud-save code (its send after the host exits), linked by swiftc with the settings window (no Swift main: -parse-as-library)
     with tempfile.TemporaryDirectory(dir=out.parents[3]) as t:
         objs = [Path(t) / 'launcher.o', Path(t) / 'save_sync.o']
         for obj, src in zip(objs, (HERE / 'launcher.c', HERE.parent / 'host/save_sync.c')):
-            run([clang, '-isysroot', sdk, '-arch', 'arm64', f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, src])
-        run([swiftc, '-sdk', sdk, '-target', f'arm64-apple-macos{minos}', '-O', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
+            run([clang, '-isysroot', sdk, '-arch', arch, f'-mmacosx-version-min={minos}', '-O2', '-Wall', '-I', HERE.parent / 'host', '-c', '-o', obj, src])
+        run([swiftc, '-sdk', sdk, '-target', f'{arch}-apple-macos{minos}', '-O', '-swift-version', '5', '-parse-as-library', '-module-cache-path', Path(t) / 'module-cache',
              '-o', out, *swift_sources(), *objs, '-framework', 'CoreFoundation', '-framework', 'AppKit', '-framework', 'SwiftUI'])
 
 
@@ -122,7 +122,7 @@ def info_plist(a, minos, icon):
     # LSSupportsGameMode off: macOS's Game Mode holds the GPU at its lowest clock while it is busy (docs/reference/frame-rate.md, macOS Game Mode holds the GPU at its lowest clock)
     p = {'CFBundleName': a.name, 'CFBundleDisplayName': a.name, 'CFBundleIdentifier': a.bundle_id or f'org.nxnative.{a.title_id.lower()}',
          'CFBundleVersion': a.version or '1.0', 'CFBundleShortVersionString': a.version or '1.0', 'CFBundlePackageType': 'APPL', 'CFBundleExecutable': EXE,
-         'CFBundleInfoDictionaryVersion': '6.0', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': ['arm64'], 'NSHighResolutionCapable': True,
+         'CFBundleInfoDictionaryVersion': '6.0', 'LSMinimumSystemVersion': minos, 'LSArchitecturePriority': [a.arch], 'NSHighResolutionCapable': True,
          'NSBluetoothAlwaysUsageDescription': 'Connect Switch 2 Joy-Con and Pro Controllers over Bluetooth.',
          'LSApplicationCategoryType': a.category or 'public.app-category.games', 'LSSupportsGameMode': False, 'DMTitleID': a.title_id.upper(), 'DMRomfsMarker': a.marker or '', 'DMLanguage': a.lang or 'en-US', 'DMSaveSyncChoice': 1}
     if icon: p['CFBundleIconFile'] = 'AppIcon'
@@ -315,7 +315,7 @@ def pack(a):
         free = shutil.disk_usage(res).free
         if need + (1 << 30) > free: raise SystemExit(f'the app needs {need / 2**30:.1f} GB on the volume of {out.parent} (no APFS clones from the build there) and {free / 2**30:.1f} GB are free')
     step(f'launcher and host ({"clones" if clone["romfs"] else "copies"} of the game files)')
-    build_launcher(mac / EXE, minos, clang, swiftc, sdk)
+    build_launcher(mac / EXE, minos, clang, swiftc, sdk, a.arch)
     shutil.copy(a.host, mac / 'dmhost')   # data and mode, not the build's extended attributes (copy2 would carry them into the app)
     copy(mods, dm, clone['mods'])
     if tables: copy(tables, dm, False)
@@ -384,6 +384,7 @@ def parse(argv):
     ap.add_argument('--env-file', help='environment switches baked in (Resources/dm/env.txt)')
     ap.add_argument('--settings', help='the game\'s launcher settings (dm/games/settings.py output; Resources/dm/launcher.json, which the Mac front end reads)')
     ap.add_argument('--title-id', required=True); ap.add_argument('--name', required=True)
+    ap.add_argument('--arch', choices=('arm64', 'x86_64'), default='arm64', help='Mac app architecture (default: arm64; use x86_64 with the Intel host)')
     ap.add_argument('--version'); ap.add_argument('--bundle-id'); ap.add_argument('--category'); ap.add_argument('--lang'); ap.add_argument('--marker', help='the profile\'s romfs_marker')
     ap.add_argument('--icon', help='the game icon (icon.jpg from the control data)')
     ap.add_argument('--sign', default='-', help='codesign identity (default: - = ad-hoc)')

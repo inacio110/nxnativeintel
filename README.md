@@ -1,8 +1,8 @@
-# nxnative
+# nxnativeintel
 
-Play your own Nintendo Switch and Switch 2 games natively on Apple silicon Macs, iPhone and iPad. One script packs your game into a Mac app or an unsigned IPA that you sideload.
+Play your own Nintendo Switch and Switch 2 games natively on Apple silicon or Intel Macs, iPhone and iPad. One script packs your game into a Mac app or an unsigned IPA that you sideload.
 
-It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
+It is not an emulator: on Apple silicon the game's own code runs directly on the Apple chip; on Intel, the experimental Dynarmic backend translates the game's AArch64 code. Switch graphics are rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
 
 [Games](#games) · [Community front ends](#community-front-ends) · [Requirements](#requirements) · [How to play](#how-to-play) · [Discussions](#discussions) · [For developers](#for-developers)
 
@@ -36,8 +36,7 @@ Community projects build on nxnative with tools to turn your games into apps for
 
 ## Requirements
 
-- **Mac:** Apple silicon, macOS 26.6 or later. Building games requires Xcode 27.2.
-- **Intel Mac:** the experimental AArch64 translation backend is under active development; it is not yet a supported gameplay target. See [Intel Mac port](docs/reference/intel-port.md).
+- **Mac:** Apple silicon or Intel, macOS 26.6 or later. Intel uses the experimental AArch64 translation backend. Building games requires Xcode 27.2. See [Intel Mac port](docs/reference/intel-port.md).
 - **iPhone:** A17 Pro chip or later, with iOS 26 or later.
 - **iPad:** M1 chip or later, with iPadOS 26 or later.
 
@@ -51,7 +50,7 @@ Switch 2 games are built from one `.nup` file or a folder of their files, not fr
 
 ### Build from the command line
 
-You need a Mac with macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2) 27.2, [Homebrew](https://brew.sh) and Python 3.12 or newer (an arm64 one, not an Intel Homebrew's). An iPhone build also needs Xcode's iOS platform (Xcode → Settings → Components).
+You need a Mac with macOS 26.6 or later, [Xcode](https://developer.apple.com/download/all/?q=Xcode%2027.2), [Homebrew](https://brew.sh) and Python 3.12 or newer running natively for the Mac (arm64 on Apple silicon, x86_64 on Intel; do not use Intel Python under Rosetta). An iPhone build also needs Xcode's iOS platform (Xcode → Settings → Components).
 
 The shaders are built with Xcode 27.2's Metal compiler. Select it before step 1: `sudo xcode-select -s /Applications/Xcode.app`. With several Xcode versions installed, name this one `Xcode-27.2.app` and select it with `sudo xcode-select -s /Applications/Xcode-27.2.app`.
 
@@ -59,7 +58,7 @@ The shaders are built with Xcode 27.2's Metal compiler. Select it before step 1:
 
 ```
 xcodebuild -downloadComponent MetalToolchain
-git clone https://github.com/seedds/nxnative.git && cd nxnative
+git clone -b codex/intel-mac-port https://github.com/inacio110/nxnativeintel.git && cd nxnativeintel
 brew install xcodegen cmake boost zstd glslang
 python3 -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic "backports.zstd; python_version < '3.14'"
 ```
@@ -80,7 +79,7 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 The IPA appears in the game's folder. The first build takes 30–60 minutes and needs free disk space of about twice the game's size plus 10 GB; building again is much faster.
 
-To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the game to open from Finder. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
+To play on the Mac instead, add `--platform mac-app`: you get a Mac app of the game to open from Finder. On Intel, the app and launcher are built for `x86_64`; gameplay remains experimental. All options: [The packing script in detail](docs/development.md#the-packing-script-in-detail).
 
 ### Install
 
