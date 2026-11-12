@@ -22,12 +22,6 @@ DM_SYMBOL(dm_guest_cpu_invoke_host):
     movq %rdi, %r11                    // host function
     movq %rsi, %r12                    // dm_guest_cpu_state
 
-    movq   0(%r12), %rdi              // x0 -> first integer argument
-    movq   8(%r12), %rsi              // x1
-    movq  16(%r12), %rdx              // x2
-    movq  24(%r12), %rcx              // x3
-    movq  32(%r12), %r8               // x4
-    movq  40(%r12), %r9               // x5
     movq  48(%r12), %rax              // x6 -> first SysV stack argument
     movq %rax, 0(%rsp)
     movq  56(%r12), %rax              // x7 -> second SysV stack argument
@@ -69,6 +63,14 @@ DM_SYMBOL(dm_guest_cpu_invoke_host):
     movq 216(%rax), %rcx; movq %rcx, 232(%rsp)
     movq 224(%rax), %rcx; movq %rcx, 240(%rsp)
 1:
+    // Load register arguments after the stack copy, whose scratch register is
+    // rcx (also the host ABI's fourth integer argument register).
+    movq   0(%r12), %rdi              // x0 -> first integer argument
+    movq   8(%r12), %rsi              // x1
+    movq  16(%r12), %rdx              // x2
+    movq  24(%r12), %rcx              // x3
+    movq  32(%r12), %r8               // x4
+    movq  40(%r12), %r9               // x5
 
     movdqu 264(%r12), %xmm0           // v0..v7
     movdqu 280(%r12), %xmm1
@@ -100,12 +102,6 @@ DM_SYMBOL(dm_guest_cpu_invoke_host_sret):
     movq %rdi, %r11                    // host function
     movq %rsi, %r12                    // dm_guest_cpu_state
 
-    movq 64(%r12), %rdi               // x8 -> hidden result pointer
-    movq 0(%r12), %rsi                // x0 -> first normal integer argument
-    movq 8(%r12), %rdx                // x1
-    movq 16(%r12), %rcx               // x2
-    movq 24(%r12), %r8                // x3
-    movq 32(%r12), %r9                // x4
     movq 40(%r12), %rax               // x5 -> first SysV stack argument
     movq %rax, 0(%rsp)
     movq 48(%r12), %rax               // x6 -> second stack argument
@@ -145,6 +141,14 @@ DM_SYMBOL(dm_guest_cpu_invoke_host_sret):
     movq 216(%rax), %rcx; movq %rcx, 240(%rsp)
     movq 224(%rax), %rcx; movq %rcx, 248(%rsp)
 2:
+    // Keep the x2 argument in rcx intact while the guest stack arguments are
+    // copied, just as in the ordinary bridge above.
+    movq 64(%r12), %rdi               // x8 -> hidden result pointer
+    movq 0(%r12), %rsi                // x0 -> first normal integer argument
+    movq 8(%r12), %rdx                // x1
+    movq 16(%r12), %rcx               // x2
+    movq 24(%r12), %r8                // x3
+    movq 32(%r12), %r9                // x4
 
     movdqu 264(%r12), %xmm0
     movdqu 280(%r12), %xmm1

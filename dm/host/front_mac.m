@@ -14,6 +14,7 @@
 #import <Metal/Metal.h>
 #import <GameController/GameController.h>
 #include "dm.h"
+#include "../gfx/nvn/nvn_mtl.h"
 #include "dm_input.h"
 #include "front.h"
 #include "hle.h"
@@ -1525,7 +1526,7 @@ void front_run(void (*guest)(void)) {
         NSView *v = win.contentView = [[DmGameView alloc] initWithFrame:r];
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
-        g_layer.device = MTLCreateSystemDefaultDevice();
+        g_layer.device = (__bridge id<MTLDevice>)mtl_device_choose();
         g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         g_layer.contentsScale = win.backingScaleFactor;
         // Apple's HUD over the game (frame rate, frame and GPU time, memory): front_hud_env turns it on before the first device. The layer's developerHUDProperties
@@ -1732,4 +1733,27 @@ void front_gpu_lost(void) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), tell);
         [win toggleFullScreen:nil];
     });
+}
+
+// An unsupported Metal device should explain why before the game exits. This is reached on the guest thread during graphics setup;
+// the alert runs on AppKit's main thread, and the same status is used by scripts that launch the windowless host.
+void front_gpu_unsupported(const char *reason) {
+    NSString *detail = reason && *reason ? @(reason) : @"This GPU does not support the graphics features required by the game.";
+    if (!getenv("DM_WINDOW") || !g_layer) {
+        LOG("FATAL %s", detail.UTF8String);
+        exit(70);
+    }
+    void (^show)(void) = ^{
+        LOG("front end: showing unsupported GPU alert");
+        NSAlert *a = [NSAlert new];
+        a.alertStyle = NSAlertStyleCritical;
+        a.messageText = @"This Mac cannot run the game";
+        a.informativeText = detail;
+        [a addButtonWithTitle:@"Quit"];
+        [NSApp activateIgnoringOtherApps:YES];
+        [a runModal];
+        exit(70);
+    };
+    if (NSThread.isMainThread) show();
+    else dispatch_sync(dispatch_get_main_queue(), show);
 }

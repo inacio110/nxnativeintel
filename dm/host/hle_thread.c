@@ -398,6 +398,9 @@ static void wake_sync_waiters(const void *obj);
 static void thread_exit(thr_t *t) {
     t->exit_ns = now_ns(); t->exit_tick = dm_thread_tick_fn ? dm_thread_tick_fn() : 0;
     // No logging here: the exit happens on the guest thread's own stack (some are only a dozen or so KiB), and a printf with floating point would blow the stack (real-device smoke test: SIGBUS when LibcurlResolver exits, backtrace fprintf → __dtoa). Only the time is recorded, and it is printed later in the state dump
+#ifdef DM_GUEST_CPU_DYNARMIC
+    dm_guest_cpu_release_processor_id(t->handle);
+#endif
     pthread_mutex_lock(&G);
     t->exited = 1;
     wake_sync_waiters(t);   // Complete synchronization waits on this thread
@@ -418,20 +421,29 @@ void dm_thread_returned(void) { die("guest thread entry function returned (Horiz
 //     (Aokana: FMOD's stream thread decoded while IL2CPP's liveness pass had set bit 0 of the class words of the objects it used, and jumped through one).
 module_t *module_of(const void *p);
 #ifdef DM_GUEST_CPU_DYNARMIC
-static void on_pause_sig(int sig, siginfo_t *si, void *uc_) {
-    (void)sig; (void)si; (void)uc_;
+static int thr_translated_pause_requested(void) {
     thr_t *t = pthread_getspecific(g_keythr);
-    if (!t || !atomic_load(&t->pause_req) || atomic_load(&t->svc_regs)) return;
+    return t && atomic_load(&t->pause_req);
+}
+
+static void thr_translated_pause(const dm_guest_cpu_state *state) {
+    thr_t *t = pthread_getspecific(g_keythr);
+    if (!t) return;
     pthread_mutex_lock(&G);
-    if (t->pause_req) {
-        while (t->pause_req) {
-            t->paused = 1;
-            pthread_cond_broadcast(&t->pcv);
-            pthread_cond_wait(&t->pcv, &G);
-        }
-        t->paused = 0;
-        t->ctx_ok = 0;
+    memcpy(t->ctx_x, state->x, sizeof t->ctx_x);
+    t->ctx_x[18] = (uint64_t)(uintptr_t)pthread_getspecific(g_key18);
+    t->ctx_fp = state->x[29]; t->ctx_lr = state->x[30];
+    t->ctx_sp = state->sp - 32; t->ctx_pc = state->pc; t->ctx_pstate = state->pstate;
+    memcpy(t->ctx_v, state->v, sizeof t->ctx_v);
+    t->ctx_fpcr = state->fpcr; t->ctx_fpsr = state->fpsr;
+    t->ctx_ok = 1;
+    while (t->pause_req) {
+        t->paused = 1;
+        pthread_cond_broadcast(&t->pcv);
+        pthread_cond_wait(&t->pcv, &G);
     }
+    t->paused = 0;
+    t->ctx_ok = 0;
     pthread_mutex_unlock(&G);
 }
 #else
@@ -477,13 +489,12 @@ void thr_svc_leave(void) {
 }
 static void pause_install(void) {
 #ifdef DM_GUEST_CPU_DYNARMIC
-    // The handler is only a cooperative stop point for translated guest
-    // threads. It deliberately does not inspect the host ucontext: the
-    // AArch64 register context lives in Dynarmic.
-#endif
+    dm_guest_cpu_set_pause_hooks(thr_translated_pause_requested, thr_translated_pause);
+#else
     struct sigaction sa = {.sa_sigaction = on_pause_sig, .sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART};
     sigemptyset(&sa.sa_mask);
     sigaction(SIGUSR2, &sa, NULL);
+#endif
 }
 // Horizon svc::ThreadContext (arm64, 0x320 bytes)
 typedef struct { uint64_t r[29], fp, lr, sp, pc; uint32_t pstate, pad; __uint128_t v[32]; uint32_t fpcr, fpsr; uint64_t tpidr; } hz_ctx_t;
@@ -494,8 +505,16 @@ static void ctx_fill(const thr_t *t, hz_ctx_t *o) {   // holding G, t is stopped
     if (r) {   // gate frame: x0..x30 at +0, q0..q31 at +256, nzcv / fpsr / fpcr at +768 / +776 / +784, the gate block's sp at +792 (the guest's sp before the gate block's push less 16)
         for (int i = 0; i < 29; i++) o->r[i] = r[i];
         o->r[18] = t->svc_x18;   // the gate frame's x18 is the host's (see on_pause_sig)
+#ifdef DM_GUEST_CPU_DYNARMIC
+        // Translated gates pass the x array at the start of dm_guest_cpu_state.
+        const dm_guest_cpu_state *state = (const dm_guest_cpu_state *)r;
+        o->fp = r[29]; o->lr = r[30]; o->sp = state->sp; o->pc = t->svc_pc;
+        o->pstate = state->pstate;
+        memcpy(o->v, state->v, sizeof o->v); o->fpsr = state->fpsr; o->fpcr = state->fpcr;
+#else
         o->fp = r[29]; o->lr = r[30]; o->sp = r[99]; o->pc = t->svc_pc; o->pstate = (uint32_t)r[96];
         memcpy(o->v, r + 32, sizeof o->v); o->fpsr = (uint32_t)r[97]; o->fpcr = (uint32_t)r[98];
+#endif
     } else if (t->ctx_ok) {
         memcpy(o->r, t->ctx_x, sizeof o->r); o->fp = t->ctx_fp; o->lr = t->ctx_lr; o->sp = t->ctx_sp; o->pc = t->ctx_pc; o->pstate = t->ctx_pstate;
         memcpy(o->v, t->ctx_v, sizeof o->v); o->fpcr = t->ctx_fpcr; o->fpsr = t->ctx_fpsr;
@@ -1175,8 +1194,10 @@ static int svc_thread_impl(int num, uint64_t *regs) {
             if (!t->started || t->exited || (st & 1)) t->paused = 1;
             uint64_t t0 = now_ns(); int warned = 0;
             while (!t->paused && !t->exited) {
+#ifndef DM_GUEST_CPU_DYNARMIC
                 pthread_mutex_unlock(&G); pthread_kill(t->pt, SIGUSR2); pthread_mutex_lock(&G);
                 if (t->paused || t->exited) break;
+#endif
                 struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += 100000; if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; }
                 pthread_cond_timedwait(&t->pcv, &G, &dl);
                 if (!warned && now_ns() - t0 > 1000000000ull) { warned = 1; LOG("[RED] thread %#x still not suspended after more than 1 second (stuck in host code?)", t->handle); }

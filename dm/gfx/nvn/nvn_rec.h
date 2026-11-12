@@ -99,7 +99,7 @@ enum {
     RO_C_TABLE, RO_C_PSO, RO_C_DISPATCH, RO_C_DISPATCH_IND, RO_C_COPY_BB, RO_C_COPY_BT, RO_C_COPY_BT_OPT, RO_C_COPY_TB, RO_C_COPY_TB_OPT, RO_C_COPY_TT, RO_C_FILL,
     RO_T_ADDR, RO_T_TEX, RO_T_SAMP,
     RO_LABEL, RO_R_TS, RO_C_TS,   // diagnostics: DM_NVN_ENC_LABEL, DM_NVN_GPUPROF
-    RO_NOTE,   // a[0] an _Atomic uint64_t, a[1] a value: the encode thread has made every call before this one (rec_note_wait)
+    RO_NOTE, RO_USE_RESOURCE,   // RO_USE_RESOURCE retains its MTLResource in a[0], usage in a[1], render/compute encoder kind in a[2]
 };
 typedef struct { uint32_t op, nobj; uint64_t a[15]; } rec_t;   // the first nobj slots hold retained objects (0 for nil), released once the call is made
 enum { REC_BLK = 256 };
@@ -108,6 +108,7 @@ typedef struct rec_blk { struct rec_blk *next; int n; rec_t r[REC_BLK]; } rec_bl
 // On by default on iOS: Breath of the Wild on an iPhone 17 Pro Max (handheld, the Great Plateau) took about 8 ms of submit thread per frame without it and 3.3–4.5 ms with it
 static int g_rec = -1;
 static inline int rec_on(void) {
+    if (g_classic) return 1;   // Metal 3 has no MTL4 command buffers; replay through the classic queue is required
     if (__builtin_expect(g_rec >= 0, 1)) return g_rec;
     const char *e = getenv("DM_NVN_ENC_THREAD");
 #if TARGET_OS_IPHONE
@@ -127,6 +128,10 @@ static inline uint64_t rec_obj(id o) { return o ? (uint64_t)(uintptr_t)CFBridgin
 static inline id rec_id(uint64_t v) { return (__bridge id)(void *)(uintptr_t)v; }
 static inline uint64_t rec_f(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static inline float rec_fv(uint64_t v) { uint32_t u = (uint32_t)v; float f; memcpy(&f, &u, 4); return f; }
+static rec_t *rec_put(uint32_t op, uint32_t nobj);
+static inline void rec_use_resource(id encoder, id<MTLResource> resource, MTLResourceUsage usage, int encoder_kind) {
+    (void)encoder; rec_t *r = rec_put(RO_USE_RESOURCE, 1); r->a[0] = rec_obj(resource); r->a[1] = usage; r->a[2] = encoder_kind;
+}
 
 static pthread_mutex_t g_note_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_note_cv = PTHREAD_COND_INITIALIZER;
 // Wait until the encode thread has passed a RO_NOTE of at least v on p (only the encode thread's progress through what is queued, never the GPU)
@@ -137,75 +142,197 @@ static void rec_note_wait(_Atomic uint64_t *p, uint64_t v) {
 
 // ---------- The encode thread ----------
 static id g_rx_cb, g_rx_enc;   // the encode thread's real command buffer and open encoder
+static int g_rx_classic_enc;   // 0 none, 1 render, 2 compute, 3 blit
+static id g_rx_classic_compute_pso, g_rx_classic_compute_table;
+static NSHashTable<id<MTLResource>> *g_rx_classic_use_resources;   // MTL3's useResource does not retain: hold indirect resources through GPU completion
+static NSMutableArray<NSArray *> *g_rx_classic_pending_uses;       // a useResource recorded beside a blit is applied to the next encoder of its intended kind
+static void rec_classic_apply_pending_uses(int kind) {
+    if (!g_rx_classic_pending_uses.count) return;
+    for (NSUInteger i = 0; i < g_rx_classic_pending_uses.count;) {
+        NSArray *use = g_rx_classic_pending_uses[i];
+        if ([use[2] intValue] != kind) { i++; continue; }
+        id<MTLResource> resource = use[0]; MTLResourceUsage usage = (MTLResourceUsage)[use[1] unsignedIntegerValue];
+        if (kind == 1) [(id<MTLRenderCommandEncoder>)g_rx_enc useResource:resource usage:usage];
+        else if (kind == 2) [(id<MTLComputeCommandEncoder>)g_rx_enc useResource:resource usage:usage];
+        [g_rx_classic_pending_uses removeObjectAtIndex:i];
+    }
+}
+static void rec_classic_end_encoder(void) {
+    if (g_rx_enc) [(id<MTLCommandEncoder>)g_rx_enc endEncoding];
+    g_rx_enc = nil; g_rx_classic_enc = 0;
+    mtl3_rec_encoder_reset();
+}
+static id<MTLComputeCommandEncoder> rec_classic_compute_encoder(void) {
+    if (g_rx_classic_enc == 2) return g_rx_enc;
+    rec_classic_end_encoder();
+    id<MTLComputeCommandEncoder> encoder = [(id<MTLCommandBuffer>)g_rx_cb computeCommandEncoder];
+    if (!encoder) MDIE("Metal 3 replay: could not create a compute encoder");
+    g_rx_enc = encoder; g_rx_classic_enc = 2;
+    if (g_rx_classic_compute_pso) [encoder setComputePipelineState:g_rx_classic_compute_pso];
+    if (g_rx_classic_compute_table && !mtl3_rec_compute_table(encoder, g_rx_classic_compute_table)) MDIE("Metal 3 replay: a compute argument table references a retired resource");
+    rec_classic_apply_pending_uses(2);
+    return encoder;
+}
+static id<MTLBlitCommandEncoder> rec_classic_blit_encoder(void) {
+    if (g_rx_classic_enc == 3) return g_rx_enc;
+    rec_classic_end_encoder();
+    id<MTLBlitCommandEncoder> encoder = [(id<MTLCommandBuffer>)g_rx_cb blitCommandEncoder];
+    if (!encoder) MDIE("Metal 3 replay: could not create a blit encoder");
+    g_rx_enc = encoder; g_rx_classic_enc = 3;
+    return encoder;
+}
+static id<MTLBuffer> rec_classic_buffer(uint64_t address, uint64_t length, NSUInteger *offset) {
+    void *object = NULL; uint64_t off = 0;
+    if (!mtl_buffer_resolve(address, length, &object, &off)) MDIE("Metal 3 replay: GPU buffer address %#llx+%#llx is not registered", (unsigned long long)address, (unsigned long long)length);
+    if (offset) *offset = (NSUInteger)off;
+    return (__bridge id<MTLBuffer>)object;
+}
 static void rec_exec(const rec_t *r) {
     const uint64_t *a = r->a; id e = g_rx_enc;
     switch (r->op) {
-    case RO_CB_NEW: g_rx_cb = [g_dev newCommandBuffer]; break;
-    case RO_CB_BEGIN: [(id<MTL4CommandBuffer>)g_rx_cb beginCommandBufferWithAllocator:rec_id(a[0])]; break;
-    case RO_CB_END: [(id<MTL4CommandBuffer>)g_rx_cb endCommandBuffer]; break;
-    case RO_CB_BLOCK: ((void (^)(id<MTL4CommandBuffer>))rec_id(a[0]))(g_rx_cb); break;
+    case RO_CB_NEW: if (g_classic) g_rx_cb = [g_q commandBuffer]; else g_rx_cb = [g_dev newCommandBuffer]; break;
+    case RO_CB_BEGIN: if (!g_classic) [(id<MTL4CommandBuffer>)g_rx_cb beginCommandBufferWithAllocator:rec_id(a[0])]; break;
+    case RO_CB_END: if (!g_classic) [(id<MTL4CommandBuffer>)g_rx_cb endCommandBuffer]; break;
+    case RO_CB_BLOCK: if (g_classic) MDIE("Metal 3 replay: framework-owned Metal 4 command-buffer blocks are unavailable"); else ((void (^)(id<MTL4CommandBuffer>))rec_id(a[0]))(g_rx_cb); break;
     case RO_COMMIT: case RO_COMMIT_REAL: {
         if (r->op == RO_COMMIT) ubc_wait(a[2]);   // the uniform shadows this command buffer reads
-        id<MTL4CommandBuffer> buffers[] = {r->op == RO_COMMIT ? g_rx_cb : rec_id(a[1])}; MTL4CommitOptions *o = rec_id(a[0]);
-        pthread_mutex_lock(&g_res_mu);
-        if (o) [g_q4 commit:buffers count:1 options:o]; else [g_q4 commit:buffers count:1];
-        pthread_mutex_unlock(&g_res_mu);
-        if (r->op == RO_COMMIT) g_rx_cb = nil;
+        MTL4CommitOptions *o = rec_id(a[0]);
+        if (g_classic) {
+            id<MTLCommandBuffer> cb = r->op == RO_COMMIT ? g_rx_cb : rec_id(a[1]);
+            if (r->op == RO_COMMIT && g_rx_classic_use_resources.count) {
+                NSArray *held = g_rx_classic_use_resources.allObjects; [g_rx_classic_use_resources removeAllObjects];
+                [cb addCompletedHandler:^(__unused id<MTLCommandBuffer> completed) { (void)held; }];
+            }
+            if (r->op == RO_COMMIT) [g_rx_classic_pending_uses removeAllObjects];
+            if (o) mtl3_rec_commit_options(cb, o);
+            [cb commit];
+            if (r->op == RO_COMMIT) g_rx_cb = nil;
+        } else {
+            id<MTL4CommandBuffer> buffers[] = {r->op == RO_COMMIT ? g_rx_cb : rec_id(a[1])};
+            pthread_mutex_lock(&g_res_mu);
+            if (o) [g_q4 commit:buffers count:1 options:o]; else [g_q4 commit:buffers count:1];
+            pthread_mutex_unlock(&g_res_mu);
+            if (r->op == RO_COMMIT) g_rx_cb = nil;
+        }
         break; }
-    case RO_SIGNAL: [g_q4 signalEvent:rec_id(a[0]) value:a[1]]; break;
-    case RO_Q_BLOCK: ((void (^)(void))rec_id(a[0]))(); break;
-    case RO_RE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])]; break;
-    case RO_CE_BEGIN: g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb computeCommandEncoder]; break;
-    case RO_END: [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; break;
-    case RO_BAR_QUEUE: [(id<MTL4CommandEncoder>)e barrierAfterQueueStages:a[0] beforeStages:a[1] visibilityOptions:a[2]]; break;
-    case RO_BAR_AFTER_STAGES: [(id<MTL4CommandEncoder>)e barrierAfterStages:a[0] beforeQueueStages:a[1] visibilityOptions:a[2]]; break;
-    case RO_BAR_ENCODER: [(id<MTL4CommandEncoder>)e barrierAfterEncoderStages:a[0] beforeEncoderStages:a[1] visibilityOptions:a[2]]; break;
-    case RO_R_TABLE: [(id<MTL4RenderCommandEncoder>)e setArgumentTable:rec_id(a[0]) atStages:a[1]]; break;
-    case RO_R_PSO: [(id<MTL4RenderCommandEncoder>)e setRenderPipelineState:rec_id(a[0])]; break;
-    case RO_R_DSS: [(id<MTL4RenderCommandEncoder>)e setDepthStencilState:rec_id(a[0])]; break;
-    case RO_R_VIEWPORT: { MTLViewport v; memcpy(&v, a, sizeof v); [(id<MTL4RenderCommandEncoder>)e setViewport:v]; break; }
-    case RO_R_SCISSOR: { MTLScissorRect s; memcpy(&s, a, sizeof s); [(id<MTL4RenderCommandEncoder>)e setScissorRect:s]; break; }
-    case RO_R_CULL: [(id<MTL4RenderCommandEncoder>)e setCullMode:a[0]]; break;
-    case RO_R_WINDING: [(id<MTL4RenderCommandEncoder>)e setFrontFacingWinding:a[0]]; break;
-    case RO_R_FILL: [(id<MTL4RenderCommandEncoder>)e setTriangleFillMode:a[0]]; break;
-    case RO_R_BIAS: [(id<MTL4RenderCommandEncoder>)e setDepthBias:rec_fv(a[0]) slopeScale:rec_fv(a[1]) clamp:rec_fv(a[2])]; break;
-    case RO_R_CLIP: [(id<MTL4RenderCommandEncoder>)e setDepthClipMode:a[0]]; break;
-    case RO_R_SREF: [(id<MTL4RenderCommandEncoder>)e setStencilReferenceValue:(uint32_t)a[0]]; break;
-    case RO_R_BLEND: [(id<MTL4RenderCommandEncoder>)e setBlendColorRed:rec_fv(a[0]) green:rec_fv(a[1]) blue:rec_fv(a[2]) alpha:rec_fv(a[3])]; break;
-    case RO_R_VIS: [(id<MTL4RenderCommandEncoder>)e setVisibilityResultMode:a[0] offset:a[1]]; break;
-    case RO_R_AMP: { MTLVertexAmplificationViewMapping m = {(uint32_t)a[1], (uint32_t)a[2]}; [(id<MTL4RenderCommandEncoder>)e setVertexAmplificationCount:a[0] viewMappings:a[0] ? &m : NULL]; break; }   // count 0 or 1 (slice-merged passes)
-    case RO_R_DRAW: [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2]]; break;
-    case RO_R_DRAW_INST: [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2] instanceCount:a[3] baseInstance:a[4]]; break;
-    case RO_R_DRAW_IND: [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:a[1]]; break;
-    case RO_R_DRAW_IDX: [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; break;
-    case RO_R_DRAW_IDX_IND: [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]]; break;
-    case RO_R_MESH: [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroups:MTLSizeMake(a[0], 1, 1) threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
-    case RO_R_MESH_IND: [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroupsWithIndirectBuffer:a[0] threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;   // PR #1312's indirect task / mesh draws: the encode thread (iOS) aborted on the selector
-    case RO_R_STORE_C: [(id<MTL4RenderCommandEncoder>)e setColorStoreAction:a[0] atIndex:a[1]]; break;
-    case RO_R_STORE_D: [(id<MTL4RenderCommandEncoder>)e setDepthStoreAction:a[0]]; break;
-    case RO_R_STORE_S: [(id<MTL4RenderCommandEncoder>)e setStencilStoreAction:a[0]]; break;
-    case RO_C_TABLE: [(id<MTL4ComputeCommandEncoder>)e setArgumentTable:rec_id(a[0])]; break;
-    case RO_C_PSO: [(id<MTL4ComputeCommandEncoder>)e setComputePipelineState:rec_id(a[0])]; break;
-    case RO_C_DISPATCH: [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; break;
-    case RO_C_DISPATCH_IND: [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:a[0] threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])]; break;
-    case RO_C_COPY_BB: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] toBuffer:rec_id(a[1]) destinationOffset:a[3] size:a[4]]; break;
-    case RO_C_COPY_BT: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
-                           toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12])]; break;
-    case RO_C_COPY_BT_OPT: [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7])
-                           toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12]) options:(MTLBlitOption)a[13]]; break;
-    case RO_C_COPY_TB: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12]]; break;
-    case RO_C_COPY_TB_OPT: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12] options:(MTLBlitOption)a[13]]; break;
-    case RO_C_COPY_TT: [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9])
-                           toTexture:rec_id(a[1]) destinationSlice:a[10] destinationLevel:a[11] destinationOrigin:MTLOriginMake(a[12], a[13], a[14])]; break;
-    case RO_C_FILL: [(id<MTL4ComputeCommandEncoder>)e fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]]; break;
-    case RO_T_ADDR: [(id<MTL4ArgumentTable>)rec_id(a[0]) setAddress:a[1] atIndex:a[2]]; break;
-    case RO_T_TEX: [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1]} atIndex:a[2]]; break;
-    case RO_T_SAMP: [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1]} atIndex:a[2]]; break;
-    case RO_LABEL: [(id<MTL4CommandEncoder>)e setLabel:rec_id(a[0])]; break;
-    case RO_R_TS: [(id<MTL4RenderCommandEncoder>)e writeTimestampWithGranularity:a[1] afterStage:a[2] intoHeap:rec_id(a[0]) atIndex:a[3]]; break;
-    case RO_C_TS: [(id<MTL4ComputeCommandEncoder>)e writeTimestampWithGranularity:a[1] intoHeap:rec_id(a[0]) atIndex:a[2]]; break;
+    case RO_SIGNAL:
+        if (g_classic) { id<MTLCommandBuffer> cb = [g_q commandBuffer]; [cb encodeSignalEvent:rec_id(a[0]) value:a[1]]; [cb commit]; }
+        else [g_q4 signalEvent:rec_id(a[0]) value:a[1]];
+        break;
+    case RO_Q_BLOCK: if (g_classic) MDIE("Metal 3 replay: a Metal 4 queue operation is not adapted yet"); else ((void (^)(void))rec_id(a[0]))(); break;
+    case RO_RE_BEGIN:
+        if (g_classic) { rec_classic_end_encoder(); g_rx_enc = [(id<MTLCommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:mtl3_render_pass_descriptor(rec_id(a[0]))]; g_rx_classic_enc = 1; rec_classic_apply_pending_uses(1); }
+        else g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb renderCommandEncoderWithDescriptor:rec_id(a[0])];
+        break;
+    case RO_CE_BEGIN:
+        if (g_classic) { rec_classic_end_encoder(); g_rx_classic_compute_pso = nil; g_rx_classic_compute_table = nil; g_rx_enc = [(id<MTLCommandBuffer>)g_rx_cb computeCommandEncoder]; g_rx_classic_enc = 2; rec_classic_apply_pending_uses(2); }
+        else g_rx_enc = [(id<MTL4CommandBuffer>)g_rx_cb computeCommandEncoder];
+        break;
+    case RO_END: if (g_classic) { rec_classic_end_encoder(); g_rx_classic_compute_pso = nil; g_rx_classic_compute_table = nil; } else { [(id<MTL4CommandEncoder>)e endEncoding]; g_rx_enc = nil; } break;
+    case RO_BAR_QUEUE: case RO_BAR_AFTER_STAGES: case RO_BAR_ENCODER:
+        if (g_classic) {
+            MTLBarrierScope scope = MTLBarrierScopeBuffers | MTLBarrierScopeTextures;
+            if (g_rx_classic_enc == 1) [(id<MTLRenderCommandEncoder>)e memoryBarrierWithScope:scope afterStages:MTLRenderStageVertex | MTLRenderStageFragment beforeStages:MTLRenderStageVertex | MTLRenderStageFragment];
+            else if (g_rx_classic_enc == 2) [(id<MTLComputeCommandEncoder>)e memoryBarrierWithScope:scope];
+        } else if (r->op == RO_BAR_QUEUE) [(id<MTL4CommandEncoder>)e barrierAfterQueueStages:a[0] beforeStages:a[1] visibilityOptions:a[2]];
+        else if (r->op == RO_BAR_AFTER_STAGES) [(id<MTL4CommandEncoder>)e barrierAfterStages:a[0] beforeQueueStages:a[1] visibilityOptions:a[2]];
+        else [(id<MTL4CommandEncoder>)e barrierAfterEncoderStages:a[0] beforeEncoderStages:a[1] visibilityOptions:a[2]];
+        break;
+    case RO_R_TABLE: if (g_classic) { if (!mtl3_rec_render_table(e, rec_id(a[0]), (MTLRenderStages)a[1])) MDIE("Metal 3 replay: render argument table references an unsupported stage or retired resource"); } else [(id<MTL4RenderCommandEncoder>)e setArgumentTable:rec_id(a[0]) atStages:a[1]]; break;
+    case RO_R_PSO: [(id<MTLRenderCommandEncoder>)e setRenderPipelineState:rec_id(a[0])]; break;
+    case RO_R_DSS: [(id<MTLRenderCommandEncoder>)e setDepthStencilState:rec_id(a[0])]; break;
+    case RO_R_VIEWPORT: { MTLViewport v; memcpy(&v, a, sizeof v); [(id<MTLRenderCommandEncoder>)e setViewport:v]; break; }
+    case RO_R_SCISSOR: { MTLScissorRect s; memcpy(&s, a, sizeof s); [(id<MTLRenderCommandEncoder>)e setScissorRect:s]; break; }
+    case RO_R_CULL: [(id<MTLRenderCommandEncoder>)e setCullMode:a[0]]; break;
+    case RO_R_WINDING: [(id<MTLRenderCommandEncoder>)e setFrontFacingWinding:a[0]]; break;
+    case RO_R_FILL: [(id<MTLRenderCommandEncoder>)e setTriangleFillMode:a[0]]; break;
+    case RO_R_BIAS: [(id<MTLRenderCommandEncoder>)e setDepthBias:rec_fv(a[0]) slopeScale:rec_fv(a[1]) clamp:rec_fv(a[2])]; break;
+    case RO_R_CLIP: [(id<MTLRenderCommandEncoder>)e setDepthClipMode:a[0]]; break;
+    case RO_R_SREF: [(id<MTLRenderCommandEncoder>)e setStencilReferenceValue:(uint32_t)a[0]]; break;
+    case RO_R_BLEND: [(id<MTLRenderCommandEncoder>)e setBlendColorRed:rec_fv(a[0]) green:rec_fv(a[1]) blue:rec_fv(a[2]) alpha:rec_fv(a[3])]; break;
+    case RO_R_VIS: [(id<MTLRenderCommandEncoder>)e setVisibilityResultMode:a[0] offset:a[1]]; break;
+    case RO_R_AMP: { MTLVertexAmplificationViewMapping m = {(uint32_t)a[1], (uint32_t)a[2]}; [(id<MTLRenderCommandEncoder>)e setVertexAmplificationCount:a[0] viewMappings:a[0] ? &m : NULL]; break; }   // count 0 or 1 (slice-merged passes)
+    case RO_R_DRAW: [(id<MTLRenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2]]; break;
+    case RO_R_DRAW_INST: [(id<MTLRenderCommandEncoder>)e drawPrimitives:a[0] vertexStart:a[1] vertexCount:a[2] instanceCount:a[3] baseInstance:a[4]]; break;
+    case RO_R_DRAW_IND:
+        if (g_classic) { NSUInteger off; id<MTLBuffer> b = rec_classic_buffer(a[1], 16, &off); [(id<MTLRenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:b indirectBufferOffset:off]; }
+        else [(id<MTL4RenderCommandEncoder>)e drawPrimitives:a[0] indirectBuffer:a[1]];
+        break;
+    case RO_R_DRAW_IDX:
+        if (g_classic) { NSUInteger off; id<MTLBuffer> b = rec_classic_buffer(a[3], a[4], &off); [(id<MTLRenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:b indexBufferOffset:off instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]]; }
+        else [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexCount:a[1] indexType:a[2] indexBuffer:a[3] indexBufferLength:a[4] instanceCount:a[5] baseVertex:(NSInteger)a[6] baseInstance:a[7]];
+        break;
+    case RO_R_DRAW_IDX_IND:
+        if (g_classic) { NSUInteger io, ao; id<MTLBuffer> ib = rec_classic_buffer(a[2], a[3], &io), ab = rec_classic_buffer(a[4], 16, &ao); [(id<MTLRenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:ib indexBufferOffset:io indirectBuffer:ab indirectBufferOffset:ao]; }
+        else [(id<MTL4RenderCommandEncoder>)e drawIndexedPrimitives:a[0] indexType:a[1] indexBuffer:a[2] indexBufferLength:a[3] indirectBuffer:a[4]];
+        break;
+    case RO_R_MESH: if (g_classic) MDIE("Metal 3 replay: mesh shading is not available in this renderer"); else [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroups:MTLSizeMake(a[0], 1, 1) threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
+    case RO_R_MESH_IND: if (g_classic) MDIE("Metal 3 replay: indirect mesh shading is not available in this renderer"); else [(id<MTL4RenderCommandEncoder>)e drawMeshThreadgroupsWithIndirectBuffer:a[0] threadsPerObjectThreadgroup:MTLSizeMake(a[2] ? a[2] : 1, 1, 1) threadsPerMeshThreadgroup:MTLSizeMake(a[1], 1, 1)]; break;
+    case RO_R_STORE_C: [(id<MTLRenderCommandEncoder>)e setColorStoreAction:a[0] atIndex:a[1]]; break;
+    case RO_R_STORE_D: [(id<MTLRenderCommandEncoder>)e setDepthStoreAction:a[0]]; break;
+    case RO_R_STORE_S: [(id<MTLRenderCommandEncoder>)e setStencilStoreAction:a[0]]; break;
+    case RO_C_TABLE:
+        if (g_classic) { g_rx_classic_compute_table = rec_id(a[0]); if (!mtl3_rec_compute_table(rec_classic_compute_encoder(), g_rx_classic_compute_table)) MDIE("Metal 3 replay: compute argument table references a retired resource"); }
+        else [(id<MTL4ComputeCommandEncoder>)e setArgumentTable:rec_id(a[0])];
+        break;
+    case RO_C_PSO:
+        if (g_classic) { g_rx_classic_compute_pso = rec_id(a[0]); [rec_classic_compute_encoder() setComputePipelineState:g_rx_classic_compute_pso]; }
+        else [(id<MTL4ComputeCommandEncoder>)e setComputePipelineState:rec_id(a[0])];
+        break;
+    case RO_C_DISPATCH: if (g_classic) [rec_classic_compute_encoder() dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; else [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroups:MTLSizeMake(a[0], a[1], a[2]) threadsPerThreadgroup:MTLSizeMake(a[3], a[4], a[5])]; break;
+    case RO_C_DISPATCH_IND:
+        if (g_classic) { NSUInteger off; id<MTLBuffer> b = rec_classic_buffer(a[0], 12, &off); [rec_classic_compute_encoder() dispatchThreadgroupsWithIndirectBuffer:b indirectBufferOffset:off threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])]; }
+        else [(id<MTL4ComputeCommandEncoder>)e dispatchThreadgroupsWithIndirectBuffer:a[0] threadsPerThreadgroup:MTLSizeMake(a[1], a[2], a[3])];
+        break;
+    case RO_C_COPY_BB:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] toBuffer:rec_id(a[1]) destinationOffset:a[3] size:a[4]];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] toBuffer:rec_id(a[1]) destinationOffset:a[3] size:a[4]];
+        break;
+    case RO_C_COPY_BT:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7]) toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12])];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7]) toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12])];
+        break;
+    case RO_C_COPY_BT_OPT:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7]) toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12]) options:(MTLBlitOption)a[13]];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromBuffer:rec_id(a[0]) sourceOffset:a[2] sourceBytesPerRow:a[3] sourceBytesPerImage:a[4] sourceSize:MTLSizeMake(a[5], a[6], a[7]) toTexture:rec_id(a[1]) destinationSlice:a[8] destinationLevel:a[9] destinationOrigin:MTLOriginMake(a[10], a[11], a[12]) options:(MTLBlitOption)a[13]];
+        break;
+    case RO_C_COPY_TB:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12]];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12]];
+        break;
+    case RO_C_COPY_TB_OPT:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12] options:(MTLBlitOption)a[13]];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toBuffer:rec_id(a[1]) destinationOffset:a[10] destinationBytesPerRow:a[11] destinationBytesPerImage:a[12] options:(MTLBlitOption)a[13]];
+        break;
+    case RO_C_COPY_TT:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toTexture:rec_id(a[1]) destinationSlice:a[10] destinationLevel:a[11] destinationOrigin:MTLOriginMake(a[12], a[13], a[14])];
+        else [(id<MTL4ComputeCommandEncoder>)e copyFromTexture:rec_id(a[0]) sourceSlice:a[2] sourceLevel:a[3] sourceOrigin:MTLOriginMake(a[4], a[5], a[6]) sourceSize:MTLSizeMake(a[7], a[8], a[9]) toTexture:rec_id(a[1]) destinationSlice:a[10] destinationLevel:a[11] destinationOrigin:MTLOriginMake(a[12], a[13], a[14])];
+        break;
+    case RO_C_FILL:
+        if (g_classic) [(id<MTLBlitCommandEncoder>)rec_classic_blit_encoder() fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]];
+        else [(id<MTL4ComputeCommandEncoder>)e fillBuffer:rec_id(a[0]) range:NSMakeRange(a[1], a[2]) value:(uint8_t)a[3]];
+        break;
+    case RO_T_ADDR: case RO_T_TEX: case RO_T_SAMP:
+        if (g_classic) { if (!mtl3_rec_table_update(rec_id(a[0]), r->op, a[1], a[2])) MDIE("Metal 3 replay: invalid argument table update"); }
+        else if (r->op == RO_T_ADDR) [(id<MTL4ArgumentTable>)rec_id(a[0]) setAddress:a[1] atIndex:a[2]];
+        else if (r->op == RO_T_TEX) [(id<MTL4ArgumentTable>)rec_id(a[0]) setTexture:(MTLResourceID){a[1]} atIndex:a[2]];
+        else [(id<MTL4ArgumentTable>)rec_id(a[0]) setSamplerState:(MTLResourceID){a[1]} atIndex:a[2]];
+        break;
+    case RO_USE_RESOURCE: {
+        id<MTLResource> resource = rec_id(a[0]);
+        if (!g_rx_classic_use_resources) g_rx_classic_use_resources = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
+        [g_rx_classic_use_resources addObject:resource];
+        int kind = (int)a[2];
+        if (g_rx_classic_enc == kind && kind == 1) [(id<MTLRenderCommandEncoder>)e useResource:resource usage:(MTLResourceUsage)a[1]];
+        else if (g_rx_classic_enc == kind && kind == 2) [(id<MTLComputeCommandEncoder>)e useResource:resource usage:(MTLResourceUsage)a[1]];
+        else {
+            if (!g_rx_classic_pending_uses) g_rx_classic_pending_uses = [NSMutableArray array];
+            [g_rx_classic_pending_uses addObject:@[resource, @((NSUInteger)a[1]), @(kind)]];
+            static int noted; if (!noted) { MLOG("Metal 3 replay: deferred a resource declaration from encoder kind %d to %d", g_rx_classic_enc, kind); noted = 1; }
+        }
+        break; }
+    case RO_LABEL: [(id<MTLCommandEncoder>)e setLabel:rec_id(a[0])]; break;
+    case RO_R_TS: case RO_C_TS: if (g_classic) MDIE("Metal 3 replay: Metal 4 timestamp heaps are not adapted yet"); else if (r->op == RO_R_TS) [(id<MTL4RenderCommandEncoder>)e writeTimestampWithGranularity:a[1] afterStage:a[2] intoHeap:rec_id(a[0]) atIndex:a[3]]; else [(id<MTL4ComputeCommandEncoder>)e writeTimestampWithGranularity:a[1] intoHeap:rec_id(a[0]) atIndex:a[2]]; break;
     case RO_NOTE: { _Atomic uint64_t *p = (_Atomic uint64_t *)(uintptr_t)a[0]; pthread_mutex_lock(&g_note_mu); if (a[1] > atomic_load(p)) atomic_store(p, a[1]); pthread_cond_broadcast(&g_note_cv); pthread_mutex_unlock(&g_note_mu); break; }
     default: MDIE("deferred encoding: unknown record %u", r->op);
     }
@@ -381,6 +508,11 @@ static void rec_commit(id cb, MTL4CommitOptions *o) {
 // An upload batch: its place in the queue is after what is recorded so far (it reads no uniform shadow)
 static void rec_commit_upload(id cb, MTL4CommitOptions *o) {
     if (rec_on() && g_rb_started) { rec_t *r = rec_put(RO_COMMIT_REAL, 2); r->a[0] = rec_obj(o); r->a[1] = rec_obj(cb); return; }
+    if (g_classic) {
+        if (o) mtl3_rec_commit_options(cb, o);
+        [(id<MTLCommandBuffer>)cb commit];
+        return;
+    }
     id<MTL4CommandBuffer> buffers[] = {cb};
     if (o) [g_q4 commit:buffers count:1 options:o]; else [g_q4 commit:buffers count:1];
 }

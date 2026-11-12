@@ -23,11 +23,21 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" CACHE PATH "" FORCE)
 get_filename_component(NX_NATIVE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 add_subdirectory("${NX_NATIVE_ROOT}/dm/third_party/dynarmic" dynarmic)
 
+# AppleClang 21 (Xcode 26) rejects the bundled fmt 10 compile-time checker
+# when it evaluates FMT_STRING through its consteval constructor on Intel.
+# Keep the format validation, but use the constexpr-compatible path for this
+# compiler so the Intel smoke target can build with the system C++ runtime.
+if (CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "21")
+    target_compile_definitions(fmt PUBLIC FMT_CONSTEVAL=constexpr)
+endif()
+
 add_library(dm_guest_cpu STATIC
     ../guest_cpu_dynarmic.cpp
     ../guest_cpu_abi_x86_64.S
     ../guest_cpu_guest_abi_x86_64.S
 )
+target_compile_features(dm_guest_cpu PUBLIC cxx_std_20)
 target_include_directories(dm_guest_cpu PUBLIC ..)
 target_link_libraries(dm_guest_cpu PUBLIC dynarmic)
 set_target_properties(dm_guest_cpu PROPERTIES
@@ -37,6 +47,7 @@ set_target_properties(dm_guest_cpu PROPERTIES
 add_executable(dm_guest_cpu_smoke ../guest_cpu_smoke.cpp)
 target_include_directories(dm_guest_cpu_smoke PRIVATE ..)
 target_link_libraries(dm_guest_cpu_smoke PRIVATE dm_guest_cpu)
+target_compile_options(dm_guest_cpu_smoke PRIVATE -UNDEBUG)
 set_target_properties(dm_guest_cpu_smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
@@ -46,4 +57,4 @@ set_target_properties(dm_guest_cpu_smoke PROPERTIES
 # generated file so a Dynarmic dependency change cannot silently produce a
 # link that works only on one machine.
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/dm-dynarmic-libs.txt"
-     CONTENT "$<TARGET_FILE:dm_guest_cpu>\n$<TARGET_FILE:dynarmic>\n$<TARGET_FILE:fmt>\n$<TARGET_FILE:mcl>\n$<TARGET_FILE:Zydis>\n$<TARGET_FILE:Zycore>\n")
+     CONTENT "$<TARGET_FILE_NAME:dm_guest_cpu>\n$<TARGET_FILE_NAME:dynarmic>\n$<TARGET_FILE_NAME:fmt>\n$<TARGET_FILE_NAME:mcl>\n$<TARGET_FILE_NAME:Zydis>\n$<TARGET_FILE_NAME:Zycore>\n")

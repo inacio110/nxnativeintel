@@ -4,6 +4,9 @@
 #include "dm.h"
 #include <signal.h>
 #include <dlfcn.h>
+#ifdef DM_GUEST_CPU_DYNARMIC
+#include <mach-o/ldsyms.h>
+#endif
 #include <sys/ucontext.h>
 #include <unistd.h>
 #include <sys/mman.h>
@@ -159,9 +162,12 @@ static void crash_gate(int sig) {
 }
 #ifdef DM_GUEST_CPU_DYNARMIC
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
-    (void)uc_;
+    ucontext_t *uc = uc_;
     crash_gate(sig);
-    fprintf(stderr, "[dm] CRASH sig=%d addr=%p (translated Intel host)\n", sig, si ? si->si_addr : NULL);
+    uintptr_t pc = uc ? uc->uc_mcontext->__ss.__rip : 0;
+    uintptr_t base = (uintptr_t)&_mh_execute_header;
+    fprintf(stderr, "[dm] CRASH sig=%d addr=%p pc=%#lx host_base=%#lx (translated Intel host)\n",
+            sig, si ? si->si_addr : NULL, (unsigned long)pc, (unsigned long)base);
     if (g_dump_hook) g_dump_hook();
     _exit(128 + sig);
 }

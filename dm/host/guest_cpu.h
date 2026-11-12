@@ -19,6 +19,11 @@ typedef struct dm_guest_cpu_state {
     uint32_t pstate;
 } dm_guest_cpu_state;
 
+void dm_guest_cpu_set_pause_hooks(int (*requested)(void), void (*pause)(const dm_guest_cpu_state *));
+void dm_guest_cpu_release_processor_id(uint32_t thread_handle);
+uintptr_t dm_guest_cpu_initial_sp(void);
+int dm_guest_cpu_stack_region(uint64_t addr, uint64_t *base, uint64_t *size);
+
 typedef void (*dm_guest_cpu_svc_fn)(void *context, uint32_t number, dm_guest_cpu_state *state);
 
 enum {

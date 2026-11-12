@@ -1,8 +1,8 @@
 //
 // mtl_backend.m - implementation of mtl_backend.h (ObjC, -fobjc-arc)
-// Render targets use storage mode MTLStorageModeShared: this machine is Apple Silicon with unified memory,
-// a Shared texture can be used directly as a render attachment, and once the GPU is done the CPU reads it directly with getBytes, with no extra
-// blit copy or staging buffer, so the readback path is the shortest. Cost: Shared textures cannot use lossless framebuffer compression;
+// Render targets use storage mode MTLStorageModeShared: on unified-memory GPUs, a Shared texture can be used directly as a render
+// attachment and read by the CPU after completion, with no extra blit copy or staging buffer. On a dual-GPU Intel Mac, prefer the
+// integrated GPU because the discrete GPU does not have unified memory. Cost: Shared textures cannot use lossless framebuffer compression;
 // when taking the performance route later, switch to Private + blit readback (only affects mtlb_target / mtlb_readback).
 
 #import <Foundation/Foundation.h>
@@ -44,13 +44,29 @@ static id<MTLCommandBuffer> frame_cb(MTLBCtx *c) {
 
 // ---- Device ----
 
+static id<MTLDevice> choose_device(void) {
+    id<MTLDevice> system = MTLCreateSystemDefaultDevice();
+    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+    id<MTLDevice> best = nil; int best_score = -1;
+    for (id<MTLDevice> dev in devices) {
+        int score = (dev.hasUnifiedMemory ? 1000 : 0)
+                  + ([dev supportsFamily:MTLGPUFamilyMetal3] ? 100 : 0)
+                  + (dev.supportsBCTextureCompression ? 10 : 0)
+                  + (dev == system ? 1 : 0);
+        if (!best || score > best_score) { best = dev; best_score = score; }
+    }
+    return best ?: system;
+}
+
 mtlb_ctx *mtlb_init(void) {
     @autoreleasepool {
-        id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-        if (!dev) { err("MTLCreateSystemDefaultDevice", nil); return NULL; }
+        id<MTLDevice> dev = choose_device();
+        if (!dev) { err("GPU selection", nil); return NULL; }
         if (!dev.hasUnifiedMemory) { err("unified-memory device check (needed for Shared render targets)", nil); return NULL; }
         MTLBCtx *c = [MTLBCtx new];
         c.dev = dev;
+        fprintf(stderr, "[mtlb] using %s (unified memory, Metal 3 %s)\n", dev.name.UTF8String,
+                [dev supportsFamily:MTLGPUFamilyMetal3] ? "yes" : "no");
         c.queue = [dev newCommandQueue];
         if (!c.queue) { err("newCommandQueue", nil); return NULL; }
         c.triPso = [NSMutableDictionary dictionary];

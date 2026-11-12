@@ -17,23 +17,44 @@ static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbo
 #ifdef DM_GUEST_CPU_DYNARMIC
 extern void dm_guest_cpu_svc_dispatch(void *context, uint32_t number, dm_guest_cpu_state *state); // hle.c
 static void guest_call(void *entry, uint64_t x0, uint64_t x1) {
-    // Startup calls are separated by the loader, so a private stack per call
-    // is sufficient until the general host↔guest call adapter is shared with
-    // all HLE helpers. The stack remains mapped for the whole translated run.
-    uint8_t *stack = calloc(1, 1 << 20);
-    if (!stack) die("translated guest call stack allocation failed");
     dm_guest_cpu_state state = {};
     state.x[0] = x0; state.x[1] = x1;
-    state.sp = ((uintptr_t)(stack + (1 << 20) - DM_GUEST_CPU_STACK_ARG_BYTES)) & ~UINTPTR_C(0xF);
+    state.sp = dm_guest_cpu_initial_sp();
     int rc = dm_guest_cpu_run(&state, (uint64_t)(uintptr_t)entry, 0,
                               dm_guest_cpu_svc_dispatch, NULL);
-    free(stack);
     if (rc) die("translated guest startup entry %p stopped: %s", entry, dm_guest_cpu_last_error());
 }
 #endif
 
 // Game arguments: argv[0] is fixed to "game", and whatever follows "--" is appended as is (on a real device nn::init takes them from the process argument area and hands them to the SDK through SetHostArgc/Argv)
 static char *g_argv[64] = {"game"}; static int g_argc = 1;
+
+#ifdef DM_GUEST_CPU_DYNARMIC
+// Official Switch processes receive an NSO argument area at a page-aligned
+// address.  The SDK 3.x nnosInitialize path uses it before SetHostArgc/Argv:
+// two u32 sizes at the front, followed by a space-separated argument string.
+// Keep the same layout for translated startup; a null pointer is tolerated by
+// newer SDKs but SDK 3.4 dereferences fields in the area unconditionally.
+static uint8_t g_program_argdata[0x9000] __attribute__((aligned(4)));
+
+static uint64_t guest_program_argdata(void) {
+    memset(g_program_argdata, 0, sizeof g_program_argdata);
+    uint8_t *args = g_program_argdata + 0x20;
+    size_t used = 0;
+    for (int i = 0; i < g_argc; i++) {
+        if (i) args[used++] = ' ';
+        const size_t n = strlen(g_argv[i]);
+        if (used + n > sizeof g_program_argdata - 0x20 - 1) die("translated argument area is full");
+        memcpy(args + used, g_argv[i], n);
+        used += n;
+    }
+    const uint32_t allocation = (uint32_t)sizeof g_program_argdata;
+    const uint32_t string_size = (uint32_t)used;
+    memcpy(g_program_argdata + 0, &allocation, sizeof allocation);
+    memcpy(g_program_argdata + 4, &string_size, sizeof string_size);
+    return (uint64_t)(uintptr_t)g_program_argdata;
+}
+#endif
 
 static void guest_main(void) {
     guest_thread_init();
@@ -44,7 +65,9 @@ static void guest_main(void) {
     // The three callbacks passed in by rtld: A only sets an rtld flag (skipped), B = each module's DT_INIT (before nnMain), C = destructors (not done)
 #ifdef DM_GUEST_CPU_DYNARMIC
     guest_call(req("_init_libc0"), 0, 0);
-    LOG(">>> nnosInitialize"); guest_call(req("nnosInitialize"), hmain, 0);
+    const uint64_t argdata = guest_program_argdata();
+    LOG(">>> nnosInitialize");
+    guest_call(req("nnosInitialize"), hmain, argdata);
     guest_call(req("_init_libc1"), 0, 0);
     LOG(">>> nninitInitializeSdkModule"); guest_call(req("nninitInitializeSdkModule"), 0, 0);
 #else

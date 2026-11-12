@@ -1,4 +1,4 @@
-# dm/gfx/metal — minimal Metal offscreen example
+# dm/gfx/metal — minimal classic Metal offscreen example
 
 A standalone small module: it wraps Metal in a pure C interface, renders the picture to an offscreen texture and reads it back to the CPU, without putting anything on screen. It is not compiled into the host (`dm/host/Makefile` does not include this directory); the Metal replay layer the game actually uses is in `../nvn/nvn_mtl.m`. This is kept as a reference that compiles on its own and can be understood in a few dozen lines, and as a small probe for verifying Metal behavior.
 
@@ -49,6 +49,8 @@ Before readback the buffer is first filled with 0x5a, to prevent "passing even t
 ## Probe (`probe/p_nocopy.m`)
 
 A single-file program with no build target; compile it manually with clang when needed. It verifies one thing that the replay layer's memory pool approach depends on: on a piece of memory that is not page-aligned, after extending its start and end outward to page boundaries, a zero-copy `MTLBuffer` can be created; two such buffers are allowed to overlap; and what the GPU writes can be read by the CPU through the original pointer.
+
+On dual-GPU Macs, the example selects a unified-memory GPU, preferring Metal 3. This lets the test exercise the integrated Intel GPU on older MacBook Pros instead of failing on the discrete Radeon selected by macOS as the default device.
 
 ## Limitations
 

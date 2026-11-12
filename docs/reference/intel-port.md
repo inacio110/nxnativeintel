@@ -21,12 +21,12 @@ make -C dm/host/intel check
 The current milestone executes AArch64 code on x86_64, validates the AArch64
 register-to-SysV ABI bridge (including stack arguments and indirect results),
 exposes the rewritten TLS slots and synthetic HLE/gate stubs, routes startup
-and guest-thread entry points through the translator, and avoids ARM-only codec,
-GL/Vulkan and NVN assembly in the Intel target. The build script can select
-this backend on an Intel Mac, but gameplay is still experimental and has not
-been validated here: the complete macOS host build, thread pause/context
-snapshots, all composite/variadic ABIs, runtime-JIT generated code, and a real
-Switch 1/2 game run remain to be tested.
+and guest-thread entry points through the translator, avoids ARM-only codec,
+GL/Vulkan and NVN assembly in the Intel target, and builds the Mac launcher as
+an x86_64 app. The build script can select this backend on an Intel Mac, but
+gameplay is still experimental and has not been validated here: thread
+pause/context snapshots, all composite/variadic ABIs, runtime-JIT generated
+code, and a real Switch 1/2 game run remain to be tested.
 
 Dynarmic is used under its 0BSD license, preserved in
 `dm/third_party/dynarmic/LICENSE.txt`.

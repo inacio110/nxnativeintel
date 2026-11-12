@@ -238,7 +238,12 @@ static void ownership(void) {
     assert(!pages(0, alias, P) && !pages(1, alias, P));
     assert(*(uint8_t *)(alias + P) == 0x34);
     memset((void *)(stack + P), 0x76, 2 * P);
-    readonly_base = alias; readonly_size = memory_getpagesize();
+    // On Apple Silicon the host page is 16 KiB, so the first host page also
+    // covers the next 4 KiB guest page. Intel macOS uses 4 KiB pages; place
+    // the protected page on the range being copied back so the same write-
+    // preparation assertion exercises both host page sizes.
+    readonly_base = alias + (memory_getpagesize() <= P ? P : 0);
+    readonly_size = memory_getpagesize();
     assert(!mprotect((void *)readonly_base, readonly_size, PROT_READ));
     assert(!unmap(stack + P, alias + P, 2 * P) && !readonly_size);
     for (size_t i = P; i < 3 * P; ++i) assert(((uint8_t *)alias)[i] == 0x76);
@@ -563,6 +568,7 @@ void *guest_sym(const char *name) {
     if (!strcmp(name, "_ZN2nn2os13DestroyThreadEPNS0_10ThreadTypeE")) return helper_destroy;
     assert(0); return NULL;
 }
+void *guest_call_sym(const char *name) { return guest_sym(name); }
 static void helper_body(void *arg) { assert(arg == &helper_started); *(uint8_t *)stack = 0x87; }
 static void guest_helper(void) {
     void *tt = dm_guest_thread_spawn(helper_body, &helper_started, 9, 0x10000);

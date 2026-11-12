@@ -22,6 +22,9 @@ void mtl_alias_drop_pool(const void *pool);
 void mtl_sp_phys_gone(const void *mem, uint64_t size);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 1 on success; buf is a (__bridge) id<MTLBuffer>
 int mtl_addr_known(uint64_t addr, uint64_t len);   // 1 when the range lies in one memory pool (as mtl_addr finds it); does not make the pool resident
+int mtl_buffer_resolve(uint64_t gpu, uint64_t len, void **buf, uint64_t *off);   // Metal 3: resolve a GPU address to its MTLBuffer and offset
+int mtl_texture_resolve(uint64_t resource_id, void **texture);   // Metal 3: resolve a Metal resource ID to its MTLTexture
+int mtl_sampler_resolve(uint64_t resource_id, void **sampler);   // Metal 3: resolve a Metal resource ID to its MTLSamplerState
 
 typedef struct {
     uint32_t pso, cps, shaders, dss;
@@ -54,6 +57,7 @@ void mtl_xv_window_tex(uint64_t serial);   // Register a window (swapchain) text
 // External producers (the Vulkan layer, dm/gfx/vk): the shared Metal device; a serial for one of their textures; present it once their event reaches ev_val (ticket for mtl_present_wait)
 void *mtl_device(void);
 void *mtl_device_classic(void);   // the same for a layer that draws only on classic queues: a device without Metal 4 (a virtual Mac) starts too, and its presents are dropped
+void *mtl_device_choose(void);     // system device picked across all GPUs: prefer unified memory, then Metal 4 and BC support; shared by the renderer and CAMetalLayer
 uint64_t mtl_ext_tex(void *tex);
 uint64_t mtl_present_ext(uint64_t serial, double period, void *ev, uint64_t ev_val, const int crop[4]);   // crop: x, y, w, h of the texture to show (NULL = all of it)
 void mtl_present_layer(uint32_t w, uint32_t h);   // a sized vi layer (hle_vi.c): the picture's shape instead of the display's 16:9

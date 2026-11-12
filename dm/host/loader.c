@@ -256,6 +256,13 @@ static void force_init(void) {
         }
 }
 static void *force_lookup(const char *name) {
+#ifdef DM_GUEST_CPU_DYNARMIC
+    // Without the optional large-allocation alignment fix, this override
+    // only calls the SDK's original Allocate through a host-to-guest bridge.
+    // Resolve the SDK symbol directly on Intel and avoid that nested ABI hop.
+    if (!DM_GAME_ALLOC_BIG_ALIGN &&
+        !strcmp(name, "_ZN2nn3mem17StandardAllocator8AllocateEm")) return NULL;
+#endif
     if (!g_fmask) return NULL;
     for (unsigned j = sym_hash(name) & g_fmask; g_fidx[j]; j = (j + 1) & g_fmask) {
         unsigned i = g_fidx[j] - 1;

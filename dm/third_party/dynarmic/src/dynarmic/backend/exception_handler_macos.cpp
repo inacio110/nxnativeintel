@@ -137,6 +137,14 @@ kern_return_t MachHandler::HandleRequest(x86_thread_state64_t* ts) {
     const auto iter = FindCodeBlockInfo(ts->__rip);
     if (iter == code_block_infos.end()) {
         fmt::print(stderr, "Unhandled EXC_BAD_ACCESS at rip {:#016x}\n", ts->__rip);
+        fmt::print(stderr, "Registered JIT code ranges ({}):\n", code_block_infos.size());
+        for (const auto& info : code_block_infos) {
+            fmt::print(stderr, "  {:#016x}..{:#016x} ({} bytes)\n", info.code_begin, info.code_end, info.code_end - info.code_begin);
+        }
+        fmt::print(stderr, "Host instruction bytes:");
+        const auto* bytes = reinterpret_cast<const unsigned char*>(ts->__rip);
+        for (std::size_t i = 0; i < 24; i++) fmt::print(stderr, " {:02x}", static_cast<unsigned>(bytes[i]));
+        fmt::print(stderr, "\n");
         return KERN_FAILURE;
     }
 

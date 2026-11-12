@@ -163,8 +163,11 @@ static int g_sa_big_align;
 static pthread_once_t g_sa_once = PTHREAD_ONCE_INIT;
 static void sa_init(void) {
     module_t *ms = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) ms = &g_mod[i];
-    g_sa_alloc = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEm") : NULL;
-    g_sa_alloc_al = ms ? module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEmm") : NULL;
+    // On the translated Intel backend these are guest AArch64 functions.  A
+    // native host call must enter them through the guest trampoline; calling
+    // the raw module address would execute AArch64 bytes as x86_64.
+    g_sa_alloc = ms ? guest_call_addr(module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEm")) : NULL;
+    g_sa_alloc_al = ms ? guest_call_addr(module_sym(ms, "_ZN2nn3mem17StandardAllocator8AllocateEmm")) : NULL;
     if (!g_sa_alloc || !g_sa_alloc_al) die("StandardAllocator::Allocate not found in the SDK");
     g_sa_big_align = DM_GAME_ALLOC_BIG_ALIGN;
     if (g_sa_big_align) LOG("StandardAllocator::Allocate: allocations ≥ 64 KB are 64 KB aligned (game profile alloc_big_align: memory pool storage, see hle_os.c)");

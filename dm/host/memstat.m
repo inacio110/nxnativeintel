@@ -16,6 +16,7 @@
 #include <os/proc.h>
 #endif
 #include "dm.h"
+#include "../gfx/nvn/nvn_mtl.h"
 
 void svc_guest_range(uint8_t **base, size_t *size);
 enum { C_GUEST, C_CODE, C_MALLOC, C_GPU, C_STACK, C_FILE, C_OTHER, NC };
@@ -94,7 +95,7 @@ static void *memstat_thread(void *p) {
     fprintf(f, "# unit MiB; kernel accounting internal / compressed / graphics ledger / headroom to the limit; class columns = virtual/resident/charged (deduplicated per object); charged total = Σ private charged; unattributed = phys_footprint − charged total\nseconds\tphys_footprint\tavailable\tmetal_alloc\tinternal\tcompressed\tgraphics\theadroom");
     for (int c = 0; c < NC; c++) fprintf(f, "\t%s", k_cls[c]);
     fprintf(f, "\tcharged total\tunattributed\n");
-    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();   // The same device object as the graphics backend (the system default device singleton)
+    id<MTLDevice> dev = (__bridge id<MTLDevice>)mtl_device_choose();   // The same selected GPU as the renderer and CAMetalLayer
     uint64_t t0 = now_ns();
     const char *ds = getenv("DM_MEMSTAT_DUMP"); int dump_at = ds ? atoi(ds) : -1;
     char dp[1100]; snprintf(dp, sizeof dp, "%s.regions", (const char *)p);
